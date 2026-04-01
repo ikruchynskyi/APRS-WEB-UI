@@ -2,6 +2,8 @@
 
 A live APRS packet monitor with a real-time web UI. Receives packets from an RTL-SDR dongle via `rtl_fm` + Direwolf, decodes AX.25/APRS frames, and displays stations on an interactive Leaflet map with a live packet log.
 
+![APRS Web Monitor UI](example.png)
+
 ## Features
 
 - RTL-SDR → rtl_fm → Direwolf radio pipeline (auto-restarts on crash)
