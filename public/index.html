@@ -674,7 +674,7 @@ function renderAircraftList() {
     .sort((a, b) => (b.altitude ?? -1) - (a.altitude ?? -1));
   acListEl.innerHTML = '';
   if (!sorted.length) {
-    acListEl.innerHTML = '<div class="ac-empty">No aircraft detected.<br>Run in --mode adsb or --mode both.</div>';
+    acListEl.innerHTML = '<div class="ac-empty">No aircraft detected.<br>Run with --mode adsb.</div>';
     return;
   }
   for (const ac of sorted) {
@@ -693,7 +693,7 @@ function renderAircraftList() {
         <div class="ac-callsign">
           ${ac.callsign
             ? `<a href="https://www.flightaware.com/live/flight/${encodeURIComponent(ac.callsign)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${escHtml(ac.callsign)}</a> <span class="ac-icao">${ac.icao}</span>`
-            : escHtml(ac.icao)}
+            : `<a href="https://radar.planespotters.net/?icao=${encodeURIComponent(ac.icao.toLowerCase())}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${escHtml(ac.icao)}</a>`}
         </div>
         <div class="ac-detail">
           ${ac.altitude != null ? `<span class="ac-alt">${ac.altitude.toLocaleString()} ft${vr}</span>` : ''}
