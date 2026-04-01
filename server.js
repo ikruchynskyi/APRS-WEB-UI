@@ -513,8 +513,9 @@ async function pollPat() {
 }
 
 function startPat() {
-  const args = ['http', '--listen', `0.0.0.0:${PAT_PORT}`];
-  if (PAT_CALL) args.unshift('--mycall', PAT_CALL);
+  const args = [];
+  if (PAT_CALL) args.push('--mycall', PAT_CALL);
+  args.push('http', '-a', `0.0.0.0:${PAT_PORT}`);
 
   console.log(`[Pat] Starting ${PAT_BIN} ${args.join(' ')}`);
   const pat = spawn(PAT_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
