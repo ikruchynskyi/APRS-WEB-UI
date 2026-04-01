@@ -252,6 +252,33 @@ body {
 .type-winlink   { background: #9d174d; }
 .type-unknown   { background: #374151; }
 
+/* ── Aircraft ────────────────────────────────────────────────────────── */
+.ac-marker {
+  font-size: 16px;
+  line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,0.7));
+  transition: transform 0.15s;
+}
+.ac-marker:hover { transform: scale(1.3) !important; }
+
+.ac-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid #252836;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.ac-item:hover { background: #252836; }
+.ac-callsign { font-size: 13px; font-weight: 700; color: #e2e8f0; }
+.ac-icao     { font-size: 10px; color: #475569; margin-left: 4px; }
+.ac-detail   { font-size: 11px; color: #64748b; margin-top: 1px; }
+.ac-alt      { color: #94a3b8; }
+.ac-empty    { padding: 24px 12px; text-align: center; color: #475569; font-size: 12px; }
+
 /* ── Winlink Messages ────────────────────────────────────────────────── */
 .wl-item {
   padding: 9px 12px;
@@ -303,6 +330,7 @@ body {
     <div id="tabs">
       <button class="tab-btn active" onclick="showTab('stations')">Stations</button>
       <button class="tab-btn" onclick="showTab('log')">Packets</button>
+      <button class="tab-btn" onclick="showTab('aircraft')">Aircraft <span id="ac-count" style="color:#64748b;font-size:10px"></span></button>
       <button class="tab-btn" onclick="showTab('winlink')">Winlink <span id="wl-badge" style="display:none;background:#be185d;color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;margin-left:2px">0</span></button>
     </div>
 
@@ -317,6 +345,11 @@ body {
     <!-- Packets Tab -->
     <div class="tab-panel" id="tab-log">
       <div id="packet-log"></div>
+    </div>
+
+    <!-- Aircraft Tab -->
+    <div class="tab-panel" id="tab-aircraft">
+      <div id="aircraft-list" style="flex:1;overflow-y:auto;"></div>
     </div>
 
     <!-- Winlink Tab -->
@@ -559,8 +592,8 @@ function closeDetail() {
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
 function showTab(name) {
-  const names = ['stations', 'log', 'winlink'];
-  const panels = ['tab-stations', 'tab-log', 'tab-winlink'];
+  const names  = ['stations', 'log', 'aircraft', 'winlink'];
+  const panels = ['tab-stations', 'tab-log', 'tab-aircraft', 'tab-winlink'];
   document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', names[i] === name));
   document.querySelectorAll('.tab-panel').forEach((p, i) => p.classList.toggle('active', panels[i] === 'tab-' + name));
   if (name === 'winlink') {
@@ -568,6 +601,111 @@ function showTab(name) {
     document.getElementById('wl-badge').textContent = '0';
     unreadWL = 0;
   }
+}
+
+// ── Aircraft (ADS-B) ─────────────────────────────────────────────────────────
+const aircraftMap  = new Map();  // icao -> aircraft object
+const acMarkers    = new Map();  // icao -> Leaflet marker
+const acTracks     = new Map();  // icao -> Leaflet polyline
+const acListEl     = document.getElementById('aircraft-list');
+
+function altColor(alt) {
+  if (alt == null) return '#64748b';
+  if (alt <  1000) return '#94a3b8';   // ground / very low — grey
+  if (alt < 10000) return '#22c55e';   // low     — green
+  if (alt < 25000) return '#f59e0b';   // medium  — amber
+  return '#38bdf8';                    // high    — sky blue
+}
+
+function makeAircraftIcon(ac) {
+  const color  = altColor(ac.altitude);
+  const rotate = ac.heading != null ? ac.heading : 0;
+  return L.divIcon({
+    className: '',
+    html: `<div class="ac-marker" style="color:${color};transform:rotate(${rotate}deg)">✈</div>`,
+    iconSize: [20, 20], iconAnchor: [10, 10], popupAnchor: [0, -12]
+  });
+}
+
+function acPopupHtml(ac) {
+  const label = ac.callsign || ac.icao;
+  let html = `<div class="popup-call">${escHtml(label)}</div>`;
+  if (ac.callsign) html += `<div style="color:#64748b;font-size:10px">${ac.icao}</div>`;
+  if (ac.altitude != null) html += `<div>⛰ ${ac.altitude.toLocaleString()} ft</div>`;
+  if (ac.speed    != null) html += `<div>⚡ ${ac.speed} kt  🧭 ${ac.heading ?? '—'}°</div>`;
+  if (ac.verticalRate != null && ac.verticalRate !== 0)
+    html += `<div>${ac.verticalRate > 0 ? '↑' : '↓'} ${Math.abs(ac.verticalRate)} fpm</div>`;
+  if (ac.squawk) html += `<div>Squawk: ${ac.squawk}</div>`;
+  html += `<div style="color:#64748b;margin-top:4px">${ac.onGround ? 'On ground' : 'Airborne'}</div>`;
+  return html;
+}
+
+function updateAircraftMarker(ac) {
+  if (ac.lat == null) return;
+  if (acMarkers.has(ac.icao)) {
+    const m = acMarkers.get(ac.icao);
+    m.setLatLng([ac.lat, ac.lon]);
+    m.setIcon(makeAircraftIcon(ac));
+    m.setPopupContent(acPopupHtml(ac));
+  } else {
+    const m = L.marker([ac.lat, ac.lon], { icon: makeAircraftIcon(ac) })
+      .addTo(map).bindPopup(acPopupHtml(ac));
+    acMarkers.set(ac.icao, m);
+    if (!mapInitialized) { map.setView([ac.lat, ac.lon], 9); mapInitialized = true; }
+  }
+  if (ac.track.length > 1) {
+    const pts = ac.track.map(p => [p.lat, p.lon]);
+    if (acTracks.has(ac.icao)) {
+      acTracks.get(ac.icao).setLatLngs(pts);
+    } else {
+      acTracks.set(ac.icao, L.polyline(pts, {
+        color: altColor(ac.altitude), weight: 1, opacity: 0.5, dashArray: '3 3'
+      }).addTo(map));
+    }
+  }
+}
+
+function removeAircraftMarker(icao) {
+  if (acMarkers.has(icao)) { map.removeLayer(acMarkers.get(icao)); acMarkers.delete(icao); }
+  if (acTracks.has(icao))  { map.removeLayer(acTracks.get(icao));  acTracks.delete(icao);  }
+}
+
+function renderAircraftList() {
+  const sorted = Array.from(aircraftMap.values())
+    .sort((a, b) => (b.altitude ?? -1) - (a.altitude ?? -1));
+  acListEl.innerHTML = '';
+  if (!sorted.length) {
+    acListEl.innerHTML = '<div class="ac-empty">No aircraft detected.<br>Run in --mode adsb or --mode both.</div>';
+    return;
+  }
+  for (const ac of sorted) {
+    const color = altColor(ac.altitude);
+    const label = ac.callsign || ac.icao;
+    const vr    = ac.verticalRate != null && ac.verticalRate !== 0
+      ? (ac.verticalRate > 0 ? ' ↑' : ' ↓') : '';
+    const item = document.createElement('div');
+    item.className = 'ac-item';
+    item.innerHTML = `
+      <div style="font-size:18px;color:${color};flex-shrink:0;
+        transform:rotate(${ac.heading ?? 0}deg)">✈</div>
+      <div style="flex:1;min-width:0">
+        <div class="ac-callsign">${escHtml(label)}
+          ${ac.callsign ? `<span class="ac-icao">${ac.icao}</span>` : ''}
+        </div>
+        <div class="ac-detail">
+          ${ac.altitude != null ? `<span class="ac-alt">${ac.altitude.toLocaleString()} ft${vr}</span>` : ''}
+          ${ac.speed != null ? ` · ${ac.speed} kt` : ''}
+          ${ac.heading != null ? ` · ${ac.heading}°` : ''}
+          ${ac.onGround ? ' · <em>ground</em>' : ''}
+        </div>
+      </div>`;
+    item.onclick = () => {
+      if (ac.lat != null) map.panTo([ac.lat, ac.lon]);
+      if (acMarkers.has(ac.icao)) acMarkers.get(ac.icao).openPopup();
+    };
+    acListEl.appendChild(item);
+  }
+  document.getElementById('ac-count').textContent = aircraftMap.size || '';
 }
 
 // ── Winlink ───────────────────────────────────────────────────────────────────
@@ -635,10 +773,26 @@ function connect() {
         totalPackets++;
         addLogEntry(pkt);
       }
+      for (const ac of (msg.aircraft || [])) {
+        aircraftMap.set(ac.icao, ac);
+        updateAircraftMarker(ac);
+      }
       for (const wm of (msg.winlink || [])) addWinlinkMessage(wm);
       renderWinlinkEmpty();
+      renderAircraftList();
       updateCounts();
       renderStationList();
+
+    } else if (msg.type === 'aircraft') {
+      const ac = msg.aircraft;
+      aircraftMap.set(ac.icao, ac);
+      updateAircraftMarker(ac);
+      renderAircraftList();
+
+    } else if (msg.type === 'aircraft_remove') {
+      aircraftMap.delete(msg.icao);
+      removeAircraftMarker(msg.icao);
+      renderAircraftList();
 
     } else if (msg.type === 'winlink') {
       addWinlinkMessage(msg.message);

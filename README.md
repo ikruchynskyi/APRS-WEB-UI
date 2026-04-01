@@ -15,12 +15,13 @@ A live APRS packet monitor with a real-time web UI. Receives packets from an RTL
 
 ## Requirements
 
-| Tool | Purpose |
-|------|---------|
-| Node.js ≥ 18 | Runs the web server |
-| `rtl_fm` (rtl-sdr) | Tunes the SDR and outputs raw FM audio |
-| `direwolf` | Decodes AX.25 frames, provides KISS TCP interface |
-| RTL-SDR USB dongle | Hardware SDR receiver |
+| Tool | Purpose | Mode |
+|------|---------|------|
+| Node.js ≥ 18 | Runs the web server | all |
+| `rtl_fm` (rtl-sdr) | Tunes the SDR and outputs raw FM audio | aprs, both |
+| `direwolf` | Decodes AX.25 frames, provides KISS TCP interface | aprs, both |
+| `dump1090` | Decodes ADS-B Mode S at 1090 MHz | adsb, both |
+| RTL-SDR USB dongle | Hardware SDR receiver (2 needed for `--mode both`) | all |
 
 ## Installation
 
@@ -99,7 +100,33 @@ Direwolf is started automatically by `server.js` — you do not need to configur
 
 ---
 
-### 4. Go (required for Pat)
+### 4. dump1090 (ADS-B decoder)
+
+**Debian / Ubuntu / Raspberry Pi OS:**
+```bash
+sudo apt install -y dump1090-mutability
+# or the FlightAware fork:
+sudo apt install -y dump1090-fa
+```
+
+**From source:**
+```bash
+sudo apt install -y librtlsdr-dev libusb-1.0-0-dev
+git clone https://github.com/antirez/dump1090.git
+cd dump1090 && make
+sudo cp dump1090 /usr/local/bin/
+```
+
+**macOS (Homebrew):**
+```bash
+brew install dump1090-mutability
+```
+
+Verify: `dump1090 --help`
+
+---
+
+### 5. Go (required for Pat)
 
 **Debian / Ubuntu / Raspberry Pi OS:**
 ```bash
@@ -179,6 +206,7 @@ node server.js [options]
 
 | Flag | Env Var | Default | Description |
 |------|---------|---------|-------------|
+| `--mode <m>` | `MODE` | `aprs` | Operating mode: `aprs`, `adsb`, or `both` |
 | `--port <n>` | `PORT` | `3000` | Web server HTTP port |
 | `--freq <f>` | `FREQ` | `144.390M` | RTL-FM receive frequency |
 | `--gain <n\|auto>` | `GAIN` | `auto` | RTL-SDR gain in dB, or `auto` |
@@ -187,6 +215,9 @@ node server.js [options]
 | `--sample-rate <n>` | `SAMPLE_RATE` | `22050` | Audio sample rate in Hz |
 | `--kiss-host <h>` | `KISS_HOST` | `127.0.0.1` | Direwolf KISS TCP host |
 | `--kiss-port <n>` | `KISS_PORT` | `8001` | Direwolf KISS TCP port |
+| `--adsb-bin <path>` | `ADSB_BIN` | `dump1090` | Path to dump1090 binary |
+| `--adsb-device <n>` | `ADSB_DEVICE` | `1` (both) / `0` | RTL-SDR device index for ADS-B |
+| `--sbs-port <n>` | `SBS_PORT` | `30003` | dump1090 SBS TCP output port |
 | `--pat-bin <path>` | `PAT_BIN` | `~/go/bin/pat` | Path to Pat binary |
 | `--pat-port <n>` | `PAT_PORT` | `8080` | Pat HTTP API port |
 | `--pat-callsign <call>` | `PAT_CALLSIGN` | *(from pat config)* | Override callsign passed to Pat |
@@ -220,6 +251,30 @@ PORT=8080 FREQ=144.800M GAIN=35 node server.js
 | New Zealand | `144.575M` |
 | Japan | `144.640M` |
 | South America | `144.390M` |
+
+## ADS-B Mode
+
+Spawns `dump1090` to decode Mode S transponder signals at 1090 MHz and displays aircraft on the radar map in real time. Aircraft markers are colour-coded by altitude and rotate to show heading.
+
+| Colour | Altitude |
+|--------|----------|
+| Grey | Ground / < 1 000 ft |
+| Green | 1 000 – 10 000 ft |
+| Amber | 10 000 – 25 000 ft |
+| Blue | > 25 000 ft |
+
+Aircraft disappear automatically after 60 seconds without a signal.
+
+```bash
+# ADS-B only (single dongle on device 0)
+node server.js --mode adsb
+
+# APRS + ADS-B simultaneously (two dongles: device 0 = APRS, device 1 = ADS-B)
+node server.js --mode both
+
+# Custom dump1090 binary location
+node server.js --mode adsb --adsb-bin /usr/bin/dump1090-fa
+```
 
 ## Winlink
 
