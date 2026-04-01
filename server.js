@@ -1,0 +1,426 @@
+'use strict';
+
+const express = require('express');
+const { WebSocketServer } = require('ws');
+const net = require('net');
+const http = require('http');
+const path = require('path');
+const { spawn } = require('child_process');
+
+const WEB_PORT = 3000;
+const DIREWOLF_HOST = '127.0.0.1';
+const KISS_PORT = 8001;
+
+// KISS special bytes
+const FEND = 0xC0;
+const FESC = 0xDB;
+const TFEND = 0xDC;
+const TFESC = 0xDD;
+
+const app = express();
+app.use(express.static(path.join(__dirname, 'public')));
+
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server });
+
+const stations = new Map();   // callsign -> station object
+const packetLog = [];          // last 200 packets
+const MAX_LOG = 200;
+const wsClients = new Set();
+
+// ─── WebSocket ────────────────────────────────────────────────────────────────
+
+wss.on('connection', (ws) => {
+  wsClients.add(ws);
+  ws.send(JSON.stringify({
+    type: 'init',
+    stations: Array.from(stations.values()),
+    log: packetLog.slice(-50)
+  }));
+  ws.on('close', () => wsClients.delete(ws));
+  ws.on('error', () => wsClients.delete(ws));
+});
+
+function broadcast(msg) {
+  const str = JSON.stringify(msg);
+  for (const ws of wsClients) {
+    if (ws.readyState === 1) ws.send(str);
+  }
+}
+
+// ─── AX.25 Parser ─────────────────────────────────────────────────────────────
+
+function decodeAddr(buf, off) {
+  let call = '';
+  for (let i = 0; i < 6; i++) {
+    const c = (buf[off + i] >> 1) & 0x7F;
+    if (c > 0x20) call += String.fromCharCode(c);
+  }
+  const ssidByte = buf[off + 6];
+  const ssid = (ssidByte >> 1) & 0x0F;
+  const last = (ssidByte & 0x01) === 1;
+  const repeated = (ssidByte & 0x80) !== 0;
+  return { call: ssid ? `${call.trim()}-${ssid}` : call.trim(), last, repeated };
+}
+
+function parseAX25(buf) {
+  if (buf.length < 16) return null;
+  const dest = decodeAddr(buf, 0);
+  const src  = decodeAddr(buf, 7);
+  let off = 14;
+  const path = [];
+  if (!src.last) {
+    while (off + 7 <= buf.length) {
+      const d = decodeAddr(buf, off);
+      off += 7;
+      path.push(d);
+      if (d.last) break;
+    }
+  }
+  if (off >= buf.length) return null;
+  const ctrl = buf[off++];
+  if ((ctrl & 0xEF) !== 0x03) return null; // UI frames only
+  if (off >= buf.length) return null;
+  off++; // PID
+  return { dest: dest.call, src: src.call, path, info: buf.slice(off) };
+}
+
+// ─── APRS Parser ──────────────────────────────────────────────────────────────
+
+function toDecDeg(deg, min, dir) {
+  let v = deg + min / 60;
+  if (dir === 'S' || dir === 'W') v = -v;
+  return Math.round(v * 1000000) / 1000000;
+}
+
+function parseStdPos(s) {
+  // DDmm.mmN/DDDmm.mmWS[comment]
+  const m = s.match(/^(\d{2})(\d{2}\.\d+)([NS])(.)(\d{3})(\d{2}\.\d+)([EW])(.)(.*)$/s);
+  if (!m) return null;
+  return {
+    lat: toDecDeg(+m[1], +m[2], m[3]),
+    lon: toDecDeg(+m[5], +m[6], m[7]),
+    symTable: m[4], sym: m[8], comment: m[9]
+  };
+}
+
+function parseCompressedPos(s) {
+  // /YYYYXXXXcsT
+  if (s.length < 13) return null;
+  const symTable = s[0];
+  const b = (c) => c.charCodeAt(0) - 33;
+  const lat = 90 - (b(s[1]) * 753571 + b(s[2]) * 8281 + b(s[3]) * 91 + b(s[4])) / 380926;
+  const lon = -180 + (b(s[5]) * 753571 + b(s[6]) * 8281 + b(s[7]) * 91 + b(s[8])) / 190463;
+  return {
+    lat: Math.round(lat * 1000000) / 1000000,
+    lon: Math.round(lon * 1000000) / 1000000,
+    symTable, sym: s[9], comment: s.slice(13)
+  };
+}
+
+function parseMicE(destCall, infoBuf) {
+  const dest = destCall.split('-')[0].padEnd(6);
+  if (dest.length < 6 || infoBuf.length < 9) return null;
+
+  function decChar(c) {
+    const code = c.charCodeAt(0);
+    if (code >= 0x30 && code <= 0x39) return { d: code - 0x30, flag: false };
+    if (code === 0x4C) return { d: 0, flag: false };               // L
+    if (code >= 0x41 && code <= 0x4B) return { d: code - 0x41, flag: true }; // A-K
+    if (code >= 0x50 && code <= 0x5A) return { d: code - 0x50, flag: true }; // P-Z
+    return null;
+  }
+
+  const dc = [];
+  for (let i = 0; i < 6; i++) {
+    const r = decChar(dest[i]);
+    if (!r) return null;
+    dc.push(r);
+  }
+
+  const latDeg = dc[0].d * 10 + dc[1].d;
+  const latMin = dc[2].d * 10 + dc[3].d + (dc[4].d * 10 + dc[5].d) / 100;
+  const isNorth   = dc[3].flag;
+  const lonOffset = dc[4].flag;
+  const isWest    = dc[5].flag;
+
+  let lat = latDeg + latMin / 60;
+  if (!isNorth) lat = -lat;
+
+  let lonDeg = infoBuf[1] - 28;
+  let lonMin = infoBuf[2] - 28;
+  const lonFrac = infoBuf[3] - 28;
+  if (lonOffset) lonDeg += 100;
+  if (lonDeg >= 180 && lonDeg <= 189) lonDeg -= 80;
+  if (lonMin >= 60) lonMin -= 60;
+
+  let lon = lonDeg + lonMin / 60 + lonFrac / 6000;
+  if (isWest) lon = -lon;
+
+  const speed  = (infoBuf[4] - 28) * 10 + Math.floor((infoBuf[5] - 28) / 10);
+  const course = ((infoBuf[5] - 28) % 10) * 100 + (infoBuf[6] - 28);
+  const symTable = String.fromCharCode(infoBuf[7]);
+  const sym      = String.fromCharCode(infoBuf[8]);
+  const comment  = infoBuf.slice(9).toString('latin1').replace(/^[\r\n]/, '');
+
+  return {
+    lat: Math.round(lat * 1000000) / 1000000,
+    lon: Math.round(lon * 1000000) / 1000000,
+    symTable, sym, comment, speed, course
+  };
+}
+
+function parseAPRS(frame) {
+  if (!frame.info || frame.info.length === 0) return null;
+  const infoStr = frame.info.toString('latin1');
+  const type = infoStr[0];
+  const now = new Date().toISOString();
+
+  const pkt = {
+    from: frame.src,
+    to: frame.dest,
+    path: frame.path.map(d => d.call + (d.repeated ? '*' : '')).join(','),
+    raw: infoStr,
+    type: 'unknown',
+    time: now
+  };
+
+  let pos = null;
+
+  switch (type) {
+    case '!':
+    case '=':
+      pkt.type = 'position';
+      pos = parseStdPos(infoStr.slice(1));
+      if (!pos) pos = parseCompressedPos(infoStr.slice(1));
+      break;
+
+    case '/':
+    case '@': {
+      pkt.type = 'position';
+      const ts = infoStr.slice(1, 8);
+      pkt.timestamp = ts;
+      pos = parseStdPos(infoStr.slice(8));
+      if (!pos) pos = parseCompressedPos(infoStr.slice(8));
+      break;
+    }
+
+    case ':':
+      pkt.type = 'message';
+      pkt.addressee = infoStr.slice(1, 10).trim();
+      pkt.message   = infoStr.slice(11);
+      if (pkt.addressee === 'WLNK-1' || pkt.addressee.startsWith('WL2K')) pkt.winlink = true;
+      break;
+
+    case ';': {
+      pkt.type = 'object';
+      pkt.name = infoStr.slice(1, 10).trim();
+      pkt.live = infoStr[10] === '*';
+      const oTs = infoStr.slice(11, 18);
+      pos = parseStdPos(infoStr.slice(18));
+      break;
+    }
+
+    case ')': {
+      pkt.type = 'item';
+      const excl = infoStr.indexOf('!', 1);
+      if (excl > 0) {
+        pkt.name = infoStr.slice(1, excl);
+        pos = parseStdPos(infoStr.slice(excl + 1));
+      }
+      break;
+    }
+
+    case '>':
+      pkt.type = 'status';
+      pkt.status = infoStr.slice(1).replace(/^\d{6}[zh]\s*/, '');
+      break;
+
+    case '_':
+      pkt.type = 'weather';
+      pkt.comment = infoStr.slice(1);
+      break;
+
+    case 'T':
+      pkt.type = 'telemetry';
+      pkt.comment = infoStr.slice(1);
+      break;
+
+    case '`':
+    case '\'': {
+      pkt.type = 'position';
+      const m = parseMicE(frame.dest, frame.info);
+      if (m) {
+        pos = m;
+        pkt.speed  = m.speed;
+        pkt.course = m.course;
+      }
+      break;
+    }
+
+    default:
+      // some compressed positions start with lat base91 chars
+      if (/^[!-~]{4}$/.test(infoStr.slice(1, 5))) {
+        pos = parseCompressedPos(infoStr.slice(1));
+        if (pos) pkt.type = 'position';
+      }
+  }
+
+  if (pos) {
+    pkt.lat = pos.lat;
+    pkt.lon = pos.lon;
+    pkt.symbol  = pos.symTable + pos.sym;
+    pkt.comment = (pos.comment || '').trim();
+  }
+
+  // Detect Winlink
+  if (frame.dest && (frame.dest.startsWith('APWL') || frame.dest.startsWith('APRS2')))
+    pkt.winlink = true;
+  if (pkt.symbol === '\\W') pkt.winlink = true;
+
+  return pkt;
+}
+
+// ─── Station Store ─────────────────────────────────────────────────────────────
+
+function handlePacket(pkt) {
+  if (!stations.has(pkt.from)) {
+    stations.set(pkt.from, {
+      callsign:  pkt.from,
+      firstSeen: pkt.time,
+      lastSeen:  pkt.time,
+      packets:   0,
+      track:     [],
+      lat: null, lon: null,
+      symbol: '/>',
+      comment: '',
+      status: '',
+      type: pkt.type,
+      winlink: false
+    });
+  }
+
+  const st = stations.get(pkt.from);
+  st.lastSeen = pkt.time;
+  st.packets++;
+  st.type = pkt.type !== 'unknown' ? pkt.type : st.type;
+
+  if (pkt.lat != null && pkt.lon != null) {
+    st.lat = pkt.lat;
+    st.lon = pkt.lon;
+    st.track.push({ lat: pkt.lat, lon: pkt.lon, time: pkt.time });
+    if (st.track.length > 200) st.track.shift();
+  }
+  if (pkt.symbol)  st.symbol  = pkt.symbol;
+  if (pkt.comment !== undefined && pkt.comment !== '') st.comment = pkt.comment;
+  if (pkt.status)  st.status  = pkt.status;
+  if (pkt.winlink) st.winlink = true;
+  if (pkt.speed != null) { st.speed = pkt.speed; st.course = pkt.course; }
+
+  packetLog.push(pkt);
+  if (packetLog.length > MAX_LOG) packetLog.shift();
+
+  broadcast({ type: 'packet', packet: pkt, station: st });
+  console.log(`[APRS] ${pkt.from} > ${pkt.to} (${pkt.type})${pkt.lat != null ? ` @ ${pkt.lat},${pkt.lon}` : ''}`);
+}
+
+// ─── KISS TCP Client ──────────────────────────────────────────────────────────
+
+function processKISSFrame(data) {
+  if (data.length < 2) return;
+  if ((data[0] & 0x0F) !== 0) return; // data frame type 0 only
+  const ax25 = data.slice(1);
+  const frame = parseAX25(ax25);
+  if (!frame) return;
+  const pkt = parseAPRS(frame);
+  if (!pkt) return;
+  handlePacket(pkt);
+}
+
+function startKISSClient() {
+  const sock = new net.Socket();
+  let inFrame = false, escaped = false, buf = [];
+
+  sock.on('connect', () => {
+    console.log(`[KISS] Connected to Direwolf ${DIREWOLF_HOST}:${KISS_PORT}`);
+    inFrame = false; escaped = false; buf = [];
+    broadcast({ type: 'status', connected: true });
+  });
+
+  sock.on('data', (data) => {
+    for (const byte of data) {
+      if (escaped) {
+        if (byte === TFEND) buf.push(FEND);
+        else if (byte === TFESC) buf.push(FESC);
+        escaped = false;
+      } else if (byte === FEND) {
+        if (inFrame && buf.length > 1) {
+          try { processKISSFrame(Buffer.from(buf)); } catch (e) {}
+        }
+        buf = []; inFrame = true;
+      } else if (byte === FESC) {
+        escaped = true;
+      } else if (inFrame) {
+        buf.push(byte);
+      }
+    }
+  });
+
+  sock.on('error', (err) => {
+    console.error('[KISS] Error:', err.message);
+    broadcast({ type: 'status', connected: false });
+  });
+
+  sock.on('close', () => {
+    console.log('[KISS] Disconnected — retrying in 5s');
+    broadcast({ type: 'status', connected: false });
+    setTimeout(() => sock.connect(KISS_PORT, DIREWOLF_HOST), 5000);
+  });
+
+  sock.connect(KISS_PORT, DIREWOLF_HOST);
+}
+
+// ─── Radio Pipeline ────────────────────────────────────────────────────────────
+
+function startRadio() {
+  console.log('[radio] Starting rtl_fm → direwolf pipeline');
+
+  const rtlFm = spawn('rtl_fm', ['-f', '144.390M', '-M', 'fm', '-s', '22050', '-E', 'deemp', '-'], {
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+
+  const direwolf = spawn('direwolf', ['-r', '22050', '-'], {
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+
+  // Pipe rtl_fm audio → direwolf stdin
+  rtlFm.stdout.pipe(direwolf.stdin);
+
+  // Log direwolf output (packet decodes etc.)
+  direwolf.stdout.on('data', d => process.stdout.write(d));
+  direwolf.stderr.on('data', d => process.stderr.write(d));
+  rtlFm.stderr.on('data', d => process.stderr.write(d));
+
+  let dead = false;
+  function die(label, code) {
+    if (dead) return;
+    dead = true;
+    console.log(`[radio] ${label} exited (${code}) — restarting in 5s`);
+    try { rtlFm.kill();    } catch (_) {}
+    try { direwolf.kill(); } catch (_) {}
+    setTimeout(startRadio, 5000);
+  }
+
+  rtlFm.on('close',    (c) => die('rtl_fm',    c));
+  direwolf.on('close', (c) => die('direwolf',  c));
+  rtlFm.on('error',    (e) => die('rtl_fm',    e.message));
+  direwolf.on('error', (e) => die('direwolf',  e.message));
+}
+
+// ─── Start ─────────────────────────────────────────────────────────────────────
+
+server.listen(WEB_PORT, '0.0.0.0', () => {
+  console.log(`APRS Web Monitor → http://192.168.0.101:${WEB_PORT}`);
+});
+startRadio();
+startKISSClient();

@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>APRS Live Monitor</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  background: #0f1117;
+  color: #e2e8f0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Top Bar ─────────────────────────────────────────────────────────── */
+#topbar {
+  background: #1a1d27;
+  border-bottom: 1px solid #2d3147;
+  padding: 0 16px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+  z-index: 1000;
+}
+#topbar h1 {
+  font-size: 16px;
+  font-weight: 700;
+  color: #7c8cf8;
+  letter-spacing: 0.05em;
+}
+#topbar h1 span { color: #e2e8f0; }
+.stat-pill {
+  background: #252836;
+  border: 1px solid #2d3147;
+  border-radius: 20px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+.stat-pill strong { color: #e2e8f0; }
+#conn-dot {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  background: #ef4444;
+  flex-shrink: 0;
+}
+#conn-dot.online { background: #22c55e; box-shadow: 0 0 6px #22c55e88; }
+#conn-label { font-size: 12px; color: #94a3b8; }
+
+/* ── Main Layout ──────────────────────────────────────────────────────── */
+#main {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* ── Map ─────────────────────────────────────────────────────────────── */
+#map {
+  flex: 1;
+  background: #1a1d27;
+  position: relative;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────── */
+#sidebar {
+  width: 340px;
+  flex-shrink: 0;
+  background: #1a1d27;
+  border-left: 1px solid #2d3147;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#tabs {
+  display: flex;
+  border-bottom: 1px solid #2d3147;
+  flex-shrink: 0;
+}
+.tab-btn {
+  flex: 1;
+  padding: 10px;
+  background: none;
+  border: none;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  transition: color 0.15s, background 0.15s;
+}
+.tab-btn:hover { color: #94a3b8; background: #252836; }
+.tab-btn.active { color: #7c8cf8; border-bottom: 2px solid #7c8cf8; }
+
+.tab-panel { display: none; flex: 1; overflow-y: auto; }
+.tab-panel.active { display: flex; flex-direction: column; }
+
+/* ── Station List ─────────────────────────────────────────────────────── */
+.station-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid #252836;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.station-item:hover { background: #252836; }
+.station-item.selected { background: #1e2340; }
+
+.st-icon {
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.st-info { flex: 1; min-width: 0; }
+.st-call { font-size: 13px; font-weight: 700; color: #e2e8f0; }
+.st-call .wl-badge {
+  background: #be185d;
+  color: white;
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.st-meta { font-size: 11px; color: #64748b; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-time { font-size: 10px; color: #475569; flex-shrink: 0; }
+
+/* ── Packet Log ───────────────────────────────────────────────────────── */
+.log-item {
+  padding: 7px 12px;
+  border-bottom: 1px solid #1e2130;
+  font-size: 11px;
+}
+.log-hdr { display: flex; gap: 6px; align-items: baseline; margin-bottom: 2px; }
+.log-call { font-weight: 700; color: #7c8cf8; }
+.log-type {
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.log-time { color: #475569; margin-left: auto; }
+.log-raw { color: #64748b; word-break: break-all; line-height: 1.4; }
+
+/* ── Detail Panel (bottom of sidebar) ───────────────────────────────── */
+#detail {
+  border-top: 1px solid #2d3147;
+  flex-shrink: 0;
+  background: #111420;
+  max-height: 220px;
+  overflow-y: auto;
+  display: none;
+}
+#detail.visible { display: block; }
+#detail-close {
+  float: right;
+  background: none;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px 8px;
+}
+#detail h3 { font-size: 14px; padding: 10px 12px 6px; color: #7c8cf8; }
+.detail-row {
+  display: flex;
+  padding: 3px 12px;
+  font-size: 12px;
+  gap: 8px;
+}
+.detail-row .dk { color: #64748b; width: 72px; flex-shrink: 0; }
+.detail-row .dv { color: #e2e8f0; word-break: break-all; }
+
+/* ── Map Marker ──────────────────────────────────────────────────────── */
+.aprs-marker {
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.3);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px;
+  font-weight: 800;
+  color: white;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+  cursor: pointer;
+  transition: transform 0.15s;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.5);
+}
+.aprs-marker:hover { transform: scale(1.2); z-index: 9999 !important; }
+.aprs-marker.new { animation: pop 0.4s ease-out; }
+@keyframes pop {
+  0%   { transform: scale(0); }
+  60%  { transform: scale(1.3); }
+  100% { transform: scale(1); }
+}
+
+/* ── Leaflet overrides ───────────────────────────────────────────────── */
+.leaflet-popup-content-wrapper {
+  background: #1e2340;
+  color: #e2e8f0;
+  border: 1px solid #2d3147;
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+}
+.leaflet-popup-tip { background: #1e2340; }
+.leaflet-popup-content { font-size: 12px; line-height: 1.6; }
+.popup-call { font-size: 15px; font-weight: 700; color: #7c8cf8; margin-bottom: 4px; }
+
+/* ── Search ──────────────────────────────────────────────────────────── */
+#search-wrap {
+  padding: 8px 10px;
+  border-bottom: 1px solid #2d3147;
+  flex-shrink: 0;
+}
+#search {
+  width: 100%;
+  background: #252836;
+  border: 1px solid #2d3147;
+  border-radius: 6px;
+  color: #e2e8f0;
+  padding: 6px 10px;
+  font-size: 12px;
+  outline: none;
+}
+#search:focus { border-color: #7c8cf8; }
+
+/* Type color palette */
+.type-position  { background: #1d4ed8; }
+.type-message   { background: #d97706; }
+.type-weather   { background: #0891b2; }
+.type-status    { background: #6d28d9; }
+.type-object    { background: #065f46; }
+.type-item      { background: #065f46; }
+.type-telemetry { background: #1e3a5f; }
+.type-winlink   { background: #9d174d; }
+.type-unknown   { background: #374151; }
+
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #1a1d27; }
+::-webkit-scrollbar-thumb { background: #2d3147; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <h1>APRS <span>Live Monitor</span></h1>
+  <div id="conn-dot"></div>
+  <span id="conn-label">Connecting…</span>
+  <div class="stat-pill">Stations: <strong id="cnt-stations">0</strong></div>
+  <div class="stat-pill">Packets: <strong id="cnt-packets">0</strong></div>
+  <div class="stat-pill" id="stat-last" style="display:none">Last: <strong id="last-call">—</strong></div>
+</div>
+
+<div id="main">
+  <div id="map"></div>
+
+  <div id="sidebar">
+    <div id="tabs">
+      <button class="tab-btn active" onclick="showTab('stations')">Stations</button>
+      <button class="tab-btn" onclick="showTab('log')">Packets</button>
+    </div>
+
+    <!-- Stations Tab -->
+    <div class="tab-panel active" id="tab-stations">
+      <div id="search-wrap">
+        <input id="search" type="text" placeholder="Search callsign…" oninput="filterStations()">
+      </div>
+      <div id="station-list" style="flex:1;overflow-y:auto;"></div>
+    </div>
+
+    <!-- Packets Tab -->
+    <div class="tab-panel" id="tab-log">
+      <div id="packet-log"></div>
+    </div>
+
+    <!-- Detail Panel -->
+    <div id="detail">
+      <button id="detail-close" onclick="closeDetail()">✕</button>
+      <h3 id="detail-call">—</h3>
+      <div id="detail-body"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ────────────────────────────────────────────────────────────────────
+const stations = new Map();  // callsign -> station
+const markers  = new Map();  // callsign -> Leaflet marker
+const tracks   = new Map();  // callsign -> Leaflet polyline
+let totalPackets = 0;
+let selectedCall = null;
+let searchFilter = '';
+let mapInitialized = false;
+
+// ── Map Setup ────────────────────────────────────────────────────────────────
+const map = L.map('map', { zoomControl: true, attributionControl: false });
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '© OpenStreetMap'
+}).addTo(map);
+L.control.attribution({ position: 'bottomleft', prefix: false })
+  .addAttribution('© <a href="https://osm.org">OpenStreetMap</a>')
+  .addTo(map);
+map.setView([39, -95], 5); // US default
+
+// ── Symbol → Style ───────────────────────────────────────────────────────────
+const SYM_MAP = {
+  '/-': { bg: '#dc2626', label: '⌂' },   // house
+  '/>': { bg: '#16a34a', label: '▶' },   // car
+  '/j': { bg: '#15803d', label: 'j' },   // jeep
+  '/k': { bg: '#166534', label: 'k' },   // truck
+  '/[': { bg: '#2563eb', label: '☺' },   // human
+  '/_': { bg: '#0891b2', label: '☁' },   // wx station
+  '/#': { bg: '#ea580c', label: '#' },   // digipeater
+  '/I': { bg: '#7c3aed', label: 'I' },   // igate
+  '/R': { bg: '#b45309', label: 'R' },   // radio
+  '/s': { bg: '#0284c7', label: '⛵' },   // boat
+  '/a': { bg: '#dc2626', label: '+' },   // ambulance
+  '/f': { bg: '#c2410c', label: 'f' },   // fire truck
+  '/b': { bg: '#65a30d', label: '🚲' }, // bike
+  '/u': { bg: '#475569', label: 'u' },   // bus
+  '/p': { bg: '#4f46e5', label: 'p' },   // phone
+  '\\W': { bg: '#be185d', label: 'W' },  // Winlink
+  '\\S': { bg: '#7c3aed', label: 'S' },  // space station
+};
+
+function getStyle(symbol, pkt) {
+  if (pkt && pkt.winlink) return { bg: '#be185d', label: 'WL' };
+  const s = SYM_MAP[symbol];
+  if (s) return s;
+  const typeMap = {
+    weather: { bg: '#0891b2', label: '☁' },
+    message: { bg: '#d97706', label: '✉' },
+    status:  { bg: '#6d28d9', label: 'ℹ' },
+    object:  { bg: '#065f46', label: '○' },
+  };
+  return typeMap[pkt && pkt.type] || { bg: '#475569', label: symbol ? symbol[1] : '?' };
+}
+
+function typeClass(st) {
+  if (st.winlink) return 'type-winlink';
+  return 'type-' + (st.type || 'unknown');
+}
+
+// ── Marker Creation ──────────────────────────────────────────────────────────
+function makeIcon(style, isNew) {
+  return L.divIcon({
+    className: '',
+    html: `<div class="aprs-marker${isNew ? ' new' : ''}" style="background:${style.bg};width:28px;height:28px">${style.label}</div>`,
+    iconSize: [28, 28],
+    iconAnchor: [14, 14],
+    popupAnchor: [0, -16]
+  });
+}
+
+function popupHtml(st) {
+  const ago = timeSince(st.lastSeen);
+  let html = `<div class="popup-call">${st.callsign}${st.winlink ? ' <span style="color:#ec4899;font-size:10px">WINLINK</span>' : ''}</div>`;
+  if (st.lat != null) html += `<div>📍 ${st.lat.toFixed(5)}, ${st.lon.toFixed(5)}</div>`;
+  if (st.comment)     html += `<div>${escHtml(st.comment.slice(0, 80))}</div>`;
+  if (st.status)      html += `<div>ℹ ${escHtml(st.status.slice(0, 60))}</div>`;
+  if (st.speed != null) html += `<div>⚡ ${st.speed} kt  🧭 ${st.course}°</div>`;
+  html += `<div style="color:#64748b;margin-top:4px">Last: ${ago} · ${st.packets} pkts</div>`;
+  return html;
+}
+
+function updateMarker(st, isNew) {
+  if (st.lat == null) return;
+  const style = getStyle(st.symbol, st);
+
+  if (markers.has(st.callsign)) {
+    const m = markers.get(st.callsign);
+    m.setLatLng([st.lat, st.lon]);
+    m.setIcon(makeIcon(style, false));
+    m.setPopupContent(popupHtml(st));
+  } else {
+    const m = L.marker([st.lat, st.lon], { icon: makeIcon(style, isNew) })
+      .addTo(map)
+      .bindPopup(popupHtml(st));
+    m.on('click', () => selectStation(st.callsign));
+    markers.set(st.callsign, m);
+
+    // Auto-center on first position ever received
+    if (!mapInitialized) {
+      map.setView([st.lat, st.lon], 10);
+      mapInitialized = true;
+    }
+  }
+
+  // Update track polyline
+  if (st.track.length > 1) {
+    const pts = st.track.map(p => [p.lat, p.lon]);
+    if (tracks.has(st.callsign)) {
+      tracks.get(st.callsign).setLatLngs(pts);
+    } else {
+      const line = L.polyline(pts, {
+        color: style.bg,
+        weight: 2,
+        opacity: 0.6,
+        dashArray: '4 4'
+      }).addTo(map);
+      tracks.set(st.callsign, line);
+    }
+  }
+}
+
+// ── Station List ─────────────────────────────────────────────────────────────
+function renderStationList() {
+  const list = document.getElementById('station-list');
+  const filter = searchFilter.toUpperCase();
+
+  let sorted = Array.from(stations.values())
+    .filter(st => !filter || st.callsign.includes(filter))
+    .sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
+
+  list.innerHTML = '';
+  for (const st of sorted) {
+    const style = getStyle(st.symbol, st);
+    const item = document.createElement('div');
+    item.className = 'station-item' + (st.callsign === selectedCall ? ' selected' : '');
+    item.innerHTML = `
+      <div class="st-icon" style="background:${style.bg}">${style.label}</div>
+      <div class="st-info">
+        <div class="st-call">${escHtml(st.callsign)}${st.winlink ? '<span class="wl-badge">WL</span>' : ''}</div>
+        <div class="st-meta">${escHtml((st.comment || st.status || '').slice(0, 40) || st.type)}</div>
+      </div>
+      <div class="st-time">${timeSince(st.lastSeen)}</div>`;
+    item.onclick = () => selectStation(st.callsign);
+    list.appendChild(item);
+  }
+}
+
+function filterStations() {
+  searchFilter = document.getElementById('search').value;
+  renderStationList();
+}
+
+// ── Packet Log ───────────────────────────────────────────────────────────────
+const logEl = document.getElementById('packet-log');
+function addLogEntry(pkt) {
+  const item = document.createElement('div');
+  item.className = 'log-item';
+  const typeKey = pkt.winlink ? 'winlink' : (pkt.type || 'unknown');
+  const t = new Date(pkt.time).toLocaleTimeString();
+  item.innerHTML = `
+    <div class="log-hdr">
+      <span class="log-call">${escHtml(pkt.from)}</span>
+      <span class="log-type type-${typeKey}">${typeKey}</span>
+      ${pkt.lat != null ? `<span style="color:#475569;font-size:10px">${pkt.lat.toFixed(3)},${pkt.lon.toFixed(3)}</span>` : ''}
+      <span class="log-time">${t}</span>
+    </div>
+    <div class="log-raw">${escHtml((pkt.raw || '').slice(0, 100))}</div>`;
+  logEl.insertBefore(item, logEl.firstChild);
+  // Keep at most 200 visible entries
+  while (logEl.children.length > 200) logEl.removeChild(logEl.lastChild);
+}
+
+// ── Detail Panel ─────────────────────────────────────────────────────────────
+function selectStation(call) {
+  selectedCall = call;
+  const st = stations.get(call);
+  if (!st) return;
+
+  // Pan map
+  if (st.lat != null) map.panTo([st.lat, st.lon]);
+
+  // Show detail
+  document.getElementById('detail').classList.add('visible');
+  document.getElementById('detail-call').textContent = st.callsign;
+
+  const rows = [
+    ['Type',    st.type || '—'],
+    ['Last',    new Date(st.lastSeen).toLocaleString()],
+    ['Packets', st.packets],
+    st.lat != null ? ['Position', `${st.lat.toFixed(5)}, ${st.lon.toFixed(5)}`] : null,
+    st.symbol  ? ['Symbol',   st.symbol] : null,
+    st.comment ? ['Comment',  st.comment] : null,
+    st.status  ? ['Status',   st.status] : null,
+    st.speed != null ? ['Speed',  `${st.speed} kt`] : null,
+    st.course != null ? ['Course', `${st.course}°`] : null,
+    st.winlink ? ['Winlink',  'Yes'] : null,
+    ['Path',    st.track.length + ' positions tracked'],
+    ['First',   new Date(st.firstSeen).toLocaleString()],
+  ].filter(Boolean);
+
+  document.getElementById('detail-body').innerHTML = rows.map(([k, v]) =>
+    `<div class="detail-row"><span class="dk">${k}</span><span class="dv">${escHtml(String(v))}</span></div>`
+  ).join('');
+
+  renderStationList();
+}
+
+function closeDetail() {
+  selectedCall = null;
+  document.getElementById('detail').classList.remove('visible');
+  renderStationList();
+}
+
+// ── Tabs ─────────────────────────────────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll('.tab-btn').forEach((b, i) => {
+    b.classList.toggle('active', ['stations', 'log'][i] === name);
+  });
+  document.querySelectorAll('.tab-panel').forEach((p, i) => {
+    p.classList.toggle('active', ['tab-stations', 'tab-log'][i] === 'tab-' + name);
+  });
+}
+
+// ── WebSocket ────────────────────────────────────────────────────────────────
+let ws, reconnectTimer;
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}`);
+
+  ws.onopen = () => {
+    setConn(true);
+    clearTimeout(reconnectTimer);
+  };
+
+  ws.onclose = ws.onerror = () => {
+    setConn(false);
+    reconnectTimer = setTimeout(connect, 4000);
+  };
+
+  ws.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+
+    if (msg.type === 'init') {
+      for (const st of msg.stations) {
+        stations.set(st.callsign, st);
+        updateMarker(st, false);
+      }
+      for (const pkt of msg.log) {
+        totalPackets++;
+        addLogEntry(pkt);
+      }
+      updateCounts();
+      renderStationList();
+
+    } else if (msg.type === 'packet') {
+      const { packet: pkt, station: st } = msg;
+      const isNew = !stations.has(st.callsign);
+      stations.set(st.callsign, st);
+      totalPackets++;
+
+      updateMarker(st, isNew);
+      addLogEntry(pkt);
+      updateCounts(pkt.from);
+      renderStationList();
+
+      // If station is selected, refresh detail
+      if (selectedCall === st.callsign) selectStation(st.callsign);
+
+    } else if (msg.type === 'status') {
+      setConn(msg.connected);
+    }
+  };
+}
+
+function setConn(online) {
+  document.getElementById('conn-dot').className = online ? 'online' : '';
+  document.getElementById('conn-label').textContent = online ? 'Connected to Direwolf' : 'Disconnected';
+}
+
+function updateCounts(lastCall) {
+  document.getElementById('cnt-stations').textContent = stations.size;
+  document.getElementById('cnt-packets').textContent = totalPackets;
+  if (lastCall) {
+    document.getElementById('stat-last').style.display = '';
+    document.getElementById('last-call').textContent = lastCall;
+  }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function timeSince(iso) {
+  const s = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (s < 60)   return `${s}s`;
+  if (s < 3600) return `${Math.floor(s/60)}m`;
+  if (s < 86400)return `${Math.floor(s/3600)}h`;
+  return `${Math.floor(s/86400)}d`;
+}
+
+// Refresh "last seen" times every 30s
+setInterval(renderStationList, 30000);
+
+connect();
+</script>
+</body>
+</html>
