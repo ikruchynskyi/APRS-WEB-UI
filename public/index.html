@@ -158,6 +158,8 @@ body {
 }
 .log-time { color: #475569; margin-left: auto; }
 .log-raw { color: #64748b; word-break: break-all; line-height: 1.4; }
+.log-msg { color: #94a3b8; word-break: break-all; line-height: 1.4; }
+.log-msg strong { color: #7c8cf8; }
 
 /* ── Detail Panel (bottom of sidebar) ───────────────────────────────── */
 #detail {
@@ -371,10 +373,11 @@ function makeIcon(style, isNew) {
 function popupHtml(st) {
   const ago = timeSince(st.lastSeen);
   let html = `<div class="popup-call">${st.callsign}${st.winlink ? ' <span style="color:#ec4899;font-size:10px">WINLINK</span>' : ''}</div>`;
-  if (st.lat != null) html += `<div>📍 ${st.lat.toFixed(5)}, ${st.lon.toFixed(5)}</div>`;
-  if (st.comment)     html += `<div>${escHtml(st.comment.slice(0, 80))}</div>`;
-  if (st.status)      html += `<div>ℹ ${escHtml(st.status.slice(0, 60))}</div>`;
-  if (st.speed != null) html += `<div>⚡ ${st.speed} kt  🧭 ${st.course}°</div>`;
+  if (st.lat != null)      html += `<div>📍 ${st.lat.toFixed(5)}, ${st.lon.toFixed(5)}</div>`;
+  if (st.altitude != null) html += `<div>⛰ ${st.altitude} m</div>`;
+  if (st.comment)          html += `<div>${escHtml(st.comment.slice(0, 80))}</div>`;
+  if (st.status)           html += `<div>ℹ ${escHtml(st.status.slice(0, 60))}</div>`;
+  if (st.speed != null)    html += `<div>⚡ ${st.speed} kt  🧭 ${st.course}°</div>`;
   html += `<div style="color:#64748b;margin-top:4px">Last: ${ago} · ${st.packets} pkts</div>`;
   return html;
 }
@@ -457,6 +460,14 @@ function addLogEntry(pkt) {
   item.className = 'log-item';
   const typeKey = pkt.winlink ? 'winlink' : (pkt.type || 'unknown');
   const t = new Date(pkt.time).toLocaleTimeString();
+
+  let detail = '';
+  if (pkt.type === 'message' && pkt.addressee) {
+    detail = `<div class="log-msg">To: <strong>${escHtml(pkt.addressee)}</strong> — ${escHtml((pkt.message || '').slice(0, 120))}</div>`;
+  } else {
+    detail = `<div class="log-raw">${escHtml((pkt.raw || '').slice(0, 100))}</div>`;
+  }
+
   item.innerHTML = `
     <div class="log-hdr">
       <span class="log-call">${escHtml(pkt.from)}</span>
@@ -464,9 +475,8 @@ function addLogEntry(pkt) {
       ${pkt.lat != null ? `<span style="color:#475569;font-size:10px">${pkt.lat.toFixed(3)},${pkt.lon.toFixed(3)}</span>` : ''}
       <span class="log-time">${t}</span>
     </div>
-    <div class="log-raw">${escHtml((pkt.raw || '').slice(0, 100))}</div>`;
+    ${detail}`;
   logEl.insertBefore(item, logEl.firstChild);
-  // Keep at most 200 visible entries
   while (logEl.children.length > 200) logEl.removeChild(logEl.lastChild);
 }
 
@@ -484,18 +494,19 @@ function selectStation(call) {
   document.getElementById('detail-call').textContent = st.callsign;
 
   const rows = [
-    ['Type',    st.type || '—'],
-    ['Last',    new Date(st.lastSeen).toLocaleString()],
-    ['Packets', st.packets],
-    st.lat != null ? ['Position', `${st.lat.toFixed(5)}, ${st.lon.toFixed(5)}`] : null,
-    st.symbol  ? ['Symbol',   st.symbol] : null,
-    st.comment ? ['Comment',  st.comment] : null,
-    st.status  ? ['Status',   st.status] : null,
-    st.speed != null ? ['Speed',  `${st.speed} kt`] : null,
-    st.course != null ? ['Course', `${st.course}°`] : null,
-    st.winlink ? ['Winlink',  'Yes'] : null,
-    ['Path',    st.track.length + ' positions tracked'],
-    ['First',   new Date(st.firstSeen).toLocaleString()],
+    ['Type',     st.type || '—'],
+    ['Last',     new Date(st.lastSeen).toLocaleString()],
+    ['Packets',  st.packets],
+    st.lat != null      ? ['Position', `${st.lat.toFixed(5)}, ${st.lon.toFixed(5)}`] : null,
+    st.altitude != null ? ['Altitude', `${st.altitude} m`] : null,
+    st.symbol           ? ['Symbol',   st.symbol] : null,
+    st.comment          ? ['Comment',  st.comment] : null,
+    st.status           ? ['Status',   st.status] : null,
+    st.speed != null    ? ['Speed',    `${st.speed} kt`] : null,
+    st.course != null   ? ['Course',   `${st.course}°`] : null,
+    st.winlink          ? ['Winlink',  'Yes'] : null,
+    ['Path',     st.track.length + ' positions tracked'],
+    ['First',    new Date(st.firstSeen).toLocaleString()],
   ].filter(Boolean);
 
   document.getElementById('detail-body').innerHTML = rows.map(([k, v]) =>

@@ -129,11 +129,12 @@ function toDecDeg(deg, min, dir) {
 
 function parseStdPos(s) {
   // DDmm.mmN/DDDmm.mmWS[comment]
-  const m = s.match(/^(\d{2})(\d{2}\.\d+)([NS])(.)(\d{3})(\d{2}\.\d+)([EW])(.)(.*)$/s);
+  // Spaces in minute fields are legal (APRS position ambiguity — treat as 0)
+  const m = s.match(/^(\d{2})([\d ]{2}\.[\d ]+)([NS])(.)(\d{3})([\d ]{2}\.[\d ]+)([EW])(.)(.*)$/s);
   if (!m) return null;
   return {
-    lat: toDecDeg(+m[1], +m[2], m[3]),
-    lon: toDecDeg(+m[5], +m[6], m[7]),
+    lat: toDecDeg(+m[1], +m[2].replace(/ /g, '0'), m[3]),
+    lon: toDecDeg(+m[5], +m[6].replace(/ /g, '0'), m[7]),
     symTable: m[4], sym: m[8], comment: m[9]
   };
 }
@@ -191,16 +192,30 @@ function parseMicE(destCall, infoBuf) {
   let lon = lonDeg + lonMin / 60 + lonFrac / 6000;
   if (isWest) lon = -lon;
 
-  const speed  = (infoBuf[4] - 28) * 10 + Math.floor((infoBuf[5] - 28) / 10);
-  const course = ((infoBuf[5] - 28) % 10) * 100 + (infoBuf[6] - 28);
+  // Speed/course: spec says subtract 800/400 if value meets or exceeds threshold
+  let speed  = (infoBuf[4] - 28) * 10 + Math.floor((infoBuf[5] - 28) / 10);
+  let course = ((infoBuf[5] - 28) % 10) * 100 + (infoBuf[6] - 28);
+  if (speed  >= 800) speed  -= 800;
+  if (course >= 400) course -= 400;
+
   const symTable = String.fromCharCode(infoBuf[7]);
   const sym      = String.fromCharCode(infoBuf[8]);
-  const comment  = infoBuf.slice(9).toString('latin1').replace(/^[\r\n]/, '');
+
+  // Optional altitude field: 3 base-91 chars + '}', may precede the comment
+  let raw = infoBuf.slice(9).toString('latin1').replace(/^[\r\n]/, '');
+  let altitude = null;
+  const altMatch = raw.match(/^([\x21-\x7b]{3})\}([\s\S]*)$/);
+  if (altMatch) {
+    const a = altMatch[1];
+    altitude = (a.charCodeAt(0) - 33) * 8281 + (a.charCodeAt(1) - 33) * 91 + (a.charCodeAt(2) - 33) - 10000;
+    raw = altMatch[2];
+  }
 
   return {
     lat: Math.round(lat * 1000000) / 1000000,
     lon: Math.round(lon * 1000000) / 1000000,
-    symTable, sym, comment, speed, course
+    symTable, sym, comment: raw.trim(), speed, course,
+    ...(altitude !== null ? { altitude } : {})
   };
 }
 
@@ -288,16 +303,27 @@ function parseAPRS(frame) {
         pos = m;
         pkt.speed  = m.speed;
         pkt.course = m.course;
+        if (m.altitude != null) pkt.altitude = m.altitude;
       }
       break;
     }
 
-    default:
-      // some compressed positions start with lat base91 chars
-      if (/^[!-~]{4}$/.test(infoStr.slice(1, 5))) {
-        pos = parseCompressedPos(infoStr.slice(1));
-        if (pos) pkt.type = 'position';
+    default: {
+      // Compressed position: valid symbol-table char + 8 base-91 data bytes (chars 33–123)
+      const slice = infoStr.slice(1);
+      if (slice.length >= 13) {
+        const c0 = slice.charCodeAt(0);
+        const validTable = c0 === 0x2F || c0 === 0x5C ||
+          (c0 >= 0x30 && c0 <= 0x39) || (c0 >= 0x41 && c0 <= 0x5A);
+        const validData = slice.slice(1, 9).split('').every(c => {
+          const cc = c.charCodeAt(0); return cc >= 33 && cc <= 123;
+        });
+        if (validTable && validData) {
+          pos = parseCompressedPos(slice);
+          if (pos) pkt.type = 'position';
+        }
       }
+    }
   }
 
   if (pos) {
@@ -330,7 +356,8 @@ function handlePacket(pkt) {
       comment: '',
       status: '',
       type: pkt.type,
-      winlink: false
+      winlink: false,
+      altitude: null
     });
   }
 
@@ -349,7 +376,8 @@ function handlePacket(pkt) {
   if (pkt.comment !== undefined && pkt.comment !== '') st.comment = pkt.comment;
   if (pkt.status)  st.status  = pkt.status;
   if (pkt.winlink) st.winlink = true;
-  if (pkt.speed != null) { st.speed = pkt.speed; st.course = pkt.course; }
+  if (pkt.speed    != null) { st.speed = pkt.speed; st.course = pkt.course; }
+  if (pkt.altitude != null) st.altitude = pkt.altitude;
 
   packetLog.push(pkt);
   if (packetLog.length > MAX_LOG) packetLog.shift();
