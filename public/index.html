@@ -277,6 +277,8 @@ body {
 }
 .ac-item:hover { background: #252836; }
 .ac-callsign { font-size: 13px; font-weight: 700; color: #e2e8f0; }
+.ac-callsign a { color: #38bdf8; text-decoration: none; }
+.ac-callsign a:hover { text-decoration: underline; }
 .ac-icao     { font-size: 10px; color: #475569; margin-left: 4px; }
 .ac-detail   { font-size: 11px; color: #64748b; margin-top: 1px; }
 .ac-alt      { color: #94a3b8; }
@@ -688,8 +690,10 @@ function renderAircraftList() {
         justify-content:center;color:white;font-size:11px;flex-shrink:0;
         transform:rotate(${ac.heading ?? 0}deg)">▲</div>
       <div style="flex:1;min-width:0">
-        <div class="ac-callsign">${escHtml(label)}
-          ${ac.callsign ? `<span class="ac-icao">${ac.icao}</span>` : ''}
+        <div class="ac-callsign">
+          ${ac.callsign
+            ? `<a href="https://www.flightaware.com/live/flight/${encodeURIComponent(ac.callsign)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${escHtml(ac.callsign)}</a> <span class="ac-icao">${ac.icao}</span>`
+            : escHtml(ac.icao)}
         </div>
         <div class="ac-detail">
           ${ac.altitude != null ? `<span class="ac-alt">${ac.altitude.toLocaleString()} ft${vr}</span>` : ''}
