@@ -252,6 +252,34 @@ body {
 .type-winlink   { background: #9d174d; }
 .type-unknown   { background: #374151; }
 
+/* ── Winlink Messages ────────────────────────────────────────────────── */
+.wl-item {
+  padding: 9px 12px;
+  border-bottom: 1px solid #252836;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.wl-item:hover { background: #252836; }
+.wl-item.expanded { background: #1a1d30; }
+.wl-subj { font-size: 13px; font-weight: 700; color: #e2e8f0; margin-bottom: 2px; }
+.wl-meta { font-size: 11px; color: #64748b; }
+.wl-meta strong { color: #7c8cf8; }
+.wl-body {
+  display: none;
+  margin-top: 8px;
+  padding: 8px;
+  background: #0f1117;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #94a3b8;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
+.wl-item.expanded .wl-body { display: block; }
+.wl-empty { padding: 24px 12px; text-align: center; color: #475569; font-size: 12px; }
+
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: #1a1d27; }
 ::-webkit-scrollbar-thumb { background: #2d3147; border-radius: 2px; }
@@ -275,6 +303,7 @@ body {
     <div id="tabs">
       <button class="tab-btn active" onclick="showTab('stations')">Stations</button>
       <button class="tab-btn" onclick="showTab('log')">Packets</button>
+      <button class="tab-btn" onclick="showTab('winlink')">Winlink <span id="wl-badge" style="display:none;background:#be185d;color:#fff;font-size:9px;padding:1px 4px;border-radius:3px;margin-left:2px">0</span></button>
     </div>
 
     <!-- Stations Tab -->
@@ -288,6 +317,11 @@ body {
     <!-- Packets Tab -->
     <div class="tab-panel" id="tab-log">
       <div id="packet-log"></div>
+    </div>
+
+    <!-- Winlink Tab -->
+    <div class="tab-panel" id="tab-winlink">
+      <div id="winlink-list" style="flex:1;overflow-y:auto;"></div>
     </div>
 
     <!-- Detail Panel -->
@@ -308,6 +342,7 @@ let totalPackets = 0;
 let selectedCall = null;
 let searchFilter = '';
 let mapInitialized = false;
+let unreadWL = 0;
 
 // ── Map Setup ────────────────────────────────────────────────────────────────
 const map = L.map('map', { zoomControl: true, attributionControl: false });
@@ -524,12 +559,51 @@ function closeDetail() {
 
 // ── Tabs ─────────────────────────────────────────────────────────────────────
 function showTab(name) {
-  document.querySelectorAll('.tab-btn').forEach((b, i) => {
-    b.classList.toggle('active', ['stations', 'log'][i] === name);
-  });
-  document.querySelectorAll('.tab-panel').forEach((p, i) => {
-    p.classList.toggle('active', ['tab-stations', 'tab-log'][i] === 'tab-' + name);
-  });
+  const names = ['stations', 'log', 'winlink'];
+  const panels = ['tab-stations', 'tab-log', 'tab-winlink'];
+  document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', names[i] === name));
+  document.querySelectorAll('.tab-panel').forEach((p, i) => p.classList.toggle('active', panels[i] === 'tab-' + name));
+  if (name === 'winlink') {
+    document.getElementById('wl-badge').style.display = 'none';
+    document.getElementById('wl-badge').textContent = '0';
+    unreadWL = 0;
+  }
+}
+
+// ── Winlink ───────────────────────────────────────────────────────────────────
+const wlEl = document.getElementById('winlink-list');
+
+function addWinlinkMessage(msg) {
+  if (!wlEl.querySelector('.wl-empty') && wlEl.children.length === 0) {
+    // first message — remove placeholder if present
+  }
+  const existing = wlEl.querySelector(`.wl-empty`);
+  if (existing) existing.remove();
+
+  const date = msg.Date ? new Date(msg.Date).toLocaleString() : '—';
+  const to = Array.isArray(msg.To) ? msg.To.join(', ') : (msg.To || '—');
+  const item = document.createElement('div');
+  item.className = 'wl-item';
+  item.innerHTML = `
+    <div class="wl-subj">${escHtml(msg.Subject || '(no subject)')}</div>
+    <div class="wl-meta">From: <strong>${escHtml(msg.From || '—')}</strong> · To: ${escHtml(to)} · ${date}</div>
+    <div class="wl-body">${escHtml(msg.Body || '(empty)')}</div>`;
+  item.onclick = () => item.classList.toggle('expanded');
+  wlEl.insertBefore(item, wlEl.firstChild);
+
+  // Badge counter when not on Winlink tab
+  if (!document.getElementById('tab-winlink').classList.contains('active')) {
+    unreadWL++;
+    const badge = document.getElementById('wl-badge');
+    badge.textContent = unreadWL;
+    badge.style.display = 'inline';
+  }
+}
+
+function renderWinlinkEmpty() {
+  if (wlEl.children.length === 0) {
+    wlEl.innerHTML = '<div class="wl-empty">No Winlink messages yet.<br>Pat polls inbox every 30 s.</div>';
+  }
 }
 
 // ── WebSocket ────────────────────────────────────────────────────────────────
@@ -561,8 +635,13 @@ function connect() {
         totalPackets++;
         addLogEntry(pkt);
       }
+      for (const wm of (msg.winlink || [])) addWinlinkMessage(wm);
+      renderWinlinkEmpty();
       updateCounts();
       renderStationList();
+
+    } else if (msg.type === 'winlink') {
+      addWinlinkMessage(msg.message);
 
     } else if (msg.type === 'packet') {
       const { packet: pkt, station: st } = msg;

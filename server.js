@@ -36,6 +36,8 @@ const get = (flag, envKey, def) =>
   : process.env[envKey]    !== undefined ? process.env[envKey]
   : def;
 
+const os = require('os');
+
 const WEB_PORT    = Number(get('port',        'PORT',        3000));
 const FREQ        =        get('freq',        'FREQ',        '144.390M');
 const SAMPLE_RATE = Number(get('sample-rate', 'SAMPLE_RATE', 22050));
@@ -44,6 +46,9 @@ const PPM         = Number(get('ppm',         'PPM',         0));
 const RTL_DEVICE  = Number(get('device',      'DEVICE',      0));
 const DIREWOLF_HOST =      get('kiss-host',   'KISS_HOST',   '127.0.0.1');
 const KISS_PORT   = Number(get('kiss-port',   'KISS_PORT',   8001));
+const PAT_BIN     =        get('pat-bin',     'PAT_BIN',     path.join(os.homedir(), 'go/bin/pat'));
+const PAT_PORT    = Number(get('pat-port',    'PAT_PORT',    8080));
+const PAT_CALL    =        get('pat-callsign','PAT_CALLSIGN','');
 
 // KISS special bytes
 const FEND = 0xC0;
@@ -61,6 +66,9 @@ const stations = new Map();   // callsign -> station object
 const packetLog = [];          // last 200 packets
 const MAX_LOG = 200;
 const wsClients = new Set();
+const winlinkMsgs = [];        // last 100 Winlink messages from Pat
+const MAX_WL = 100;
+const seenMIDs = new Set();    // dedup Pat inbox polls
 
 // ─── WebSocket ────────────────────────────────────────────────────────────────
 
@@ -69,7 +77,8 @@ wss.on('connection', (ws) => {
   ws.send(JSON.stringify({
     type: 'init',
     stations: Array.from(stations.values()),
-    log: packetLog.slice(-50)
+    log: packetLog.slice(-50),
+    winlink: winlinkMsgs.slice(-50)
   }));
   ws.on('close', () => wsClients.delete(ws));
   ws.on('error', () => wsClients.delete(ws));
@@ -484,14 +493,58 @@ function startRadio() {
   direwolf.on('error', (e) => die('direwolf',  e.message));
 }
 
+// ─── Pat / Winlink ─────────────────────────────────────────────────────────────
+
+async function pollPat() {
+  try {
+    const res = await fetch(`http://127.0.0.1:${PAT_PORT}/api/mailbox/inbox`);
+    if (!res.ok) return;
+    const messages = await res.json();
+    if (!Array.isArray(messages)) return;
+    for (const msg of messages) {
+      if (seenMIDs.has(msg.MID)) continue;
+      seenMIDs.add(msg.MID);
+      winlinkMsgs.push(msg);
+      if (winlinkMsgs.length > MAX_WL) winlinkMsgs.shift();
+      broadcast({ type: 'winlink', message: msg });
+      console.log(`[Pat] New message: "${msg.Subject}" from ${msg.From}`);
+    }
+  } catch (_) { /* Pat not running yet */ }
+}
+
+function startPat() {
+  const args = ['http', '--listen', `0.0.0.0:${PAT_PORT}`];
+  if (PAT_CALL) args.unshift('--mycall', PAT_CALL);
+
+  console.log(`[Pat] Starting ${PAT_BIN} ${args.join(' ')}`);
+  const pat = spawn(PAT_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+  pat.stdout.on('data', d => process.stdout.write(`[Pat] ${d}`));
+  pat.stderr.on('data', d => process.stderr.write(`[Pat] ${d}`));
+
+  pat.on('error', (e) => console.error(`[Pat] Failed to start: ${e.message}`));
+  pat.on('close', (c) => {
+    console.log(`[Pat] exited (${c}) — restarting in 10s`);
+    setTimeout(startPat, 10000);
+  });
+
+  // Begin polling after Pat has time to initialize
+  setTimeout(() => {
+    pollPat();
+    setInterval(pollPat, 30000);
+  }, 5000);
+}
+
 // ─── Start ─────────────────────────────────────────────────────────────────────
 
 server.listen(WEB_PORT, '0.0.0.0', () => {
-  const ifaces = require('os').networkInterfaces();
+  const ifaces = os.networkInterfaces();
   const ips = Object.values(ifaces).flat().filter(i => i.family === 'IPv4' && !i.internal).map(i => i.address);
   console.log(`APRS Web Monitor → http://localhost:${WEB_PORT}`);
   ips.forEach(ip => console.log(`                   http://${ip}:${WEB_PORT}`));
   console.log(`Config: freq=${FREQ}  gain=${GAIN}  ppm=${PPM}  device=${RTL_DEVICE}  sample-rate=${SAMPLE_RATE}  kiss=${DIREWOLF_HOST}:${KISS_PORT}`);
+  console.log(`Pat:    bin=${PAT_BIN}  port=${PAT_PORT}${PAT_CALL ? `  callsign=${PAT_CALL}` : '  (set --pat-callsign)'}`);
 });
 startRadio();
 startKISSClient();
+startPat();

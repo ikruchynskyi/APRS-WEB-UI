@@ -99,7 +99,55 @@ Direwolf is started automatically by `server.js` — you do not need to configur
 
 ---
 
-### 4. Node.js dependencies (npm packages)
+### 4. Go (required for Pat)
+
+**Debian / Ubuntu / Raspberry Pi OS:**
+```bash
+# Download the latest Go release (check https://go.dev/dl/ for the current version)
+wget https://go.dev/dl/go1.23.4.linux-arm64.tar.gz        # Raspberry Pi / ARM64
+# wget https://go.dev/dl/go1.23.4.linux-amd64.tar.gz      # x86-64 Linux
+
+sudo rm -rf /usr/local/go
+sudo tar -C /usr/local -xzf go1.23.4.linux-*.tar.gz
+
+# Add Go to PATH (add to ~/.bashrc or ~/.zshrc to persist)
+export PATH=$PATH:/usr/local/go/bin:$HOME/go/bin
+source ~/.bashrc
+go version   # should print go1.23.x
+```
+
+**macOS (Homebrew):**
+```bash
+brew install go
+```
+
+---
+
+### 5. Pat (Winlink client)
+
+```bash
+go install github.com/la5nta/pat@latest
+# Binary is installed to ~/go/bin/pat
+~/go/bin/pat --version
+```
+
+**Initial configuration:**
+```bash
+~/go/bin/pat configure
+```
+
+This opens a text editor with `~/.config/pat/config.json`. Set at minimum:
+```json
+{
+  "mycall": "YOUR_CALLSIGN",
+  "locator": "FN30",
+  "http_addr": "0.0.0.0:8080"
+}
+```
+
+---
+
+### 6. Node.js dependencies (npm packages)
 
 ```bash
 cd aprs-web
@@ -139,6 +187,9 @@ node server.js [options]
 | `--sample-rate <n>` | `SAMPLE_RATE` | `22050` | Audio sample rate in Hz |
 | `--kiss-host <h>` | `KISS_HOST` | `127.0.0.1` | Direwolf KISS TCP host |
 | `--kiss-port <n>` | `KISS_PORT` | `8001` | Direwolf KISS TCP port |
+| `--pat-bin <path>` | `PAT_BIN` | `~/go/bin/pat` | Path to Pat binary |
+| `--pat-port <n>` | `PAT_PORT` | `8080` | Pat HTTP API port |
+| `--pat-callsign <call>` | `PAT_CALLSIGN` | *(from pat config)* | Override callsign passed to Pat |
 
 ### Examples
 
@@ -169,6 +220,35 @@ PORT=8080 FREQ=144.800M GAIN=35 node server.js
 | New Zealand | `144.575M` |
 | Japan | `144.640M` |
 | South America | `144.390M` |
+
+## Winlink
+
+The server automatically spawns `pat http` at startup and polls its REST API every 30 seconds. Incoming messages appear in the **Winlink** tab of the web UI with an unread badge counter.
+
+### Testing Winlink connectivity
+
+```bash
+# 1. Verify Pat is configured (check your callsign is set)
+~/go/bin/pat --version
+cat ~/.config/pat/config.json
+
+# 2. Test connection to Winlink via Telnet (internet, no radio needed)
+~/go/bin/pat connect telnet
+
+# 3. Send yourself a test message via Winlink webmail, then poll Pat to fetch it
+~/go/bin/pat connect telnet   # connects, syncs inbox, disconnects
+
+# 4. Check Pat inbox via its REST API (while pat http is running)
+curl http://localhost:8080/api/mailbox/inbox | python3 -m json.tool
+
+# 5. Manually trigger a fetch without waiting 30 s (restart server or use curl above)
+```
+
+> **Tip:** Go to https://webmail.winlink.org, log in with your callsign, and send a test message to yourself. Then run `~/go/bin/pat connect telnet` — it will download the message into Pat's inbox, and the server will pick it up on the next poll.
+
+### Winlink via RF (VHF Packet)
+
+To use Winlink over the air instead of Telnet, configure Pat for the `ax25` or `ardop`/`vara` transport and ensure your TNC/modem is running. This is independent of the APRS 144.390 MHz monitoring — you can run both simultaneously.
 
 ## Architecture
 
