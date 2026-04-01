@@ -676,6 +676,5 @@ server.listen(WEB_PORT, '0.0.0.0', () => {
   console.log(`Pat:    bin=${PAT_BIN}  port=${PAT_PORT}${PAT_CALL ? `  callsign=${PAT_CALL}` : '  (set --pat-callsign)'}`);
 });
 
-if (MODE === 'aprs' || MODE === 'both') { startRadio(); startKISSClient(); }
+if (MODE === 'aprs' || MODE === 'both') { startRadio(); startKISSClient(); startPat(); }
 if (MODE === 'adsb' || MODE === 'both') startADSB();
-startPat();
