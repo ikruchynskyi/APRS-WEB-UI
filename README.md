@@ -18,10 +18,10 @@ A live APRS packet monitor with a real-time web UI. Receives packets from an RTL
 | Tool | Purpose | Mode |
 |------|---------|------|
 | Node.js ≥ 18 | Runs the web server | all |
-| `rtl_fm` (rtl-sdr) | Tunes the SDR and outputs raw FM audio | aprs, both |
-| `direwolf` | Decodes AX.25 frames, provides KISS TCP interface | aprs, both |
-| `dump1090` | Decodes ADS-B Mode S at 1090 MHz | adsb, both |
-| RTL-SDR USB dongle | Hardware SDR receiver (2 needed for `--mode both`) | all |
+| `rtl_fm` (rtl-sdr) | Tunes the SDR and outputs raw FM audio | aprs |
+| `direwolf` | Decodes AX.25 frames, provides KISS TCP interface | aprs |
+| `dump1090` | Decodes ADS-B Mode S at 1090 MHz | adsb |
+| RTL-SDR USB dongle | Hardware SDR receiver | all |
 
 ## Installation
 
@@ -146,6 +146,8 @@ node server.js
 
 Open `http://localhost:3000` in a browser.
 
+Run `node server.js --help` to see all available options.
+
 ## Parameters
 
 All parameters can be passed as CLI flags or environment variables.
@@ -158,7 +160,7 @@ node server.js [options]
 
 | Flag | Env Var | Default | Description |
 |------|---------|---------|-------------|
-| `--mode <m>` | `MODE` | `aprs` | Operating mode: `aprs`, `adsb`, or `both` |
+| `--mode <m>` | `MODE` | `aprs` | Operating mode: `aprs` or `adsb` |
 | `--port <n>` | `PORT` | `3000` | Web server HTTP port |
 | `--freq <f>` | `FREQ` | `144.390M` | RTL-FM receive frequency |
 | `--gain <n\|auto>` | `GAIN` | `auto` | RTL-SDR gain in dB, or `auto` |
@@ -168,7 +170,7 @@ node server.js [options]
 | `--kiss-host <h>` | `KISS_HOST` | `127.0.0.1` | Direwolf KISS TCP host |
 | `--kiss-port <n>` | `KISS_PORT` | `8001` | Direwolf KISS TCP port |
 | `--adsb-bin <path>` | `ADSB_BIN` | `dump1090` | Path to dump1090 binary |
-| `--adsb-device <n>` | `ADSB_DEVICE` | `1` (both) / `0` | RTL-SDR device index for ADS-B |
+| `--adsb-device <n>` | `ADSB_DEVICE` | `0` | RTL-SDR device index for ADS-B |
 | `--sbs-port <n>` | `SBS_PORT` | `30003` | dump1090 SBS TCP output port |
 
 ### Examples
@@ -215,11 +217,8 @@ Spawns `dump1090` to decode Mode S transponder signals at 1090 MHz and displays 
 Aircraft disappear automatically after 60 seconds without a signal.
 
 ```bash
-# ADS-B only (single dongle on device 0)
+# ADS-B only
 node server.js --mode adsb
-
-# APRS + ADS-B simultaneously (two dongles: device 0 = APRS, device 1 = ADS-B)
-node server.js --mode both
 
 # Custom dump1090 binary location
 node server.js --mode adsb --adsb-bin /usr/bin/dump1090-fa

@@ -379,6 +379,23 @@ const SYM_MAP = {
   '\\S': { bg: '#7c3aed', label: 'S' },  // space station
 };
 
+function wxRows(wx) {
+  const rows = [];
+  if (wx.tempF    != null) rows.push(['Temperature', `${wx.tempF}°F (${wx.tempC}°C)`]);
+  if (wx.humidity != null) rows.push(['Humidity',    `${wx.humidity}%`]);
+  if (wx.pressure != null) rows.push(['Pressure',    `${wx.pressure} mbar`]);
+  if (wx.windSpeed != null || wx.windDir != null) {
+    const speed = wx.windSpeed != null ? `${wx.windSpeed} mph` : '—';
+    const dir   = wx.windDir   != null ? ` from ${wx.windDir}°` : '';
+    rows.push(['Wind', speed + dir]);
+  }
+  if (wx.windGust  != null) rows.push(['Gust',        `${wx.windGust} mph`]);
+  if (wx.rainHour     != null && wx.rainHour     > 0) rows.push(['Rain (1h)',    `${wx.rainHour.toFixed(2)}"`]);
+  if (wx.rain24h      != null && wx.rain24h      > 0) rows.push(['Rain (24h)',   `${wx.rain24h.toFixed(2)}"`]);
+  if (wx.rainMidnight != null && wx.rainMidnight > 0) rows.push(['Rain (today)', `${wx.rainMidnight.toFixed(2)}"`]);
+  return rows;
+}
+
 function getStyle(symbol, pkt) {
   if (pkt && pkt.winlink) return { bg: '#be185d', label: 'WL' };
   const s = SYM_MAP[symbol];
@@ -416,6 +433,12 @@ function popupHtml(st) {
   if (st.comment)          html += `<div>${escHtml(st.comment.slice(0, 80))}</div>`;
   if (st.status)           html += `<div>ℹ ${escHtml(st.status.slice(0, 60))}</div>`;
   if (st.speed != null)    html += `<div>⚡ ${st.speed} kt  🧭 ${st.course}°</div>`;
+  if (st.wx) {
+    const wx = st.wx;
+    if (wx.tempF    != null) html += `<div>🌡 ${wx.tempF}°F (${wx.tempC}°C)</div>`;
+    if (wx.humidity != null) html += `<div>💧 ${wx.humidity}% RH${wx.pressure != null ? `  🧭 ${wx.pressure} mbar` : ''}</div>`;
+    if (wx.windSpeed != null) html += `<div>💨 ${wx.windSpeed} mph${wx.windDir != null ? ` from ${wx.windDir}°` : ''}${wx.windGust ? ` gust ${wx.windGust}` : ''}</div>`;
+  }
   html += `<div style="color:#64748b;margin-top:4px">Last: ${ago} · ${st.packets} pkts</div>`;
   return html;
 }
@@ -502,6 +525,15 @@ function addLogEntry(pkt) {
   let detail = '';
   if (pkt.type === 'message' && pkt.addressee) {
     detail = `<div class="log-msg">To: <strong>${escHtml(pkt.addressee)}</strong> — ${escHtml((pkt.message || '').slice(0, 120))}</div>`;
+  } else if (pkt.type === 'weather' && pkt.wx) {
+    const wx = pkt.wx;
+    const parts = [];
+    if (wx.tempF    != null) parts.push(`${wx.tempF}°F`);
+    if (wx.humidity != null) parts.push(`${wx.humidity}% RH`);
+    if (wx.pressure != null) parts.push(`${wx.pressure} mbar`);
+    if (wx.windSpeed != null) parts.push(`wind ${wx.windSpeed} mph${wx.windDir != null ? ` @ ${wx.windDir}°` : ''}`);
+    if (wx.windGust != null && wx.windGust > 0) parts.push(`gust ${wx.windGust} mph`);
+    detail = `<div class="log-raw">${parts.join(' · ') || '(no data)'}</div>`;
   } else {
     detail = `<div class="log-raw">${escHtml((pkt.raw || '').slice(0, 100))}</div>`;
   }
@@ -542,7 +574,7 @@ function selectStation(call) {
     st.status           ? ['Status',   st.status] : null,
     st.speed != null    ? ['Speed',    `${st.speed} kt`] : null,
     st.course != null   ? ['Course',   `${st.course}°`] : null,
-    st.winlink          ? ['Winlink',  'Yes'] : null,
+    ...(st.wx ? wxRows(st.wx) : []),
     ['Path',     st.track.length + ' positions tracked'],
     ['First',    new Date(st.firstSeen).toLocaleString()],
   ].filter(Boolean);

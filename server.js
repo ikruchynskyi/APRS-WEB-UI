@@ -8,25 +8,6 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 // ─── CLI / ENV Config ──────────────────────────────────────────────────────────
-// Usage: node server.js [options]
-//   --mode        <m>        Operating mode: aprs | adsb | both  (default: aprs)
-//   --port        <n>        Web server port                     (default: 3000)
-// APRS options (active in mode: aprs, both):
-//   --freq        <f>        RTL-FM frequency         (default: 144.390M)
-//   --sample-rate <n>        Audio sample rate Hz     (default: 22050)
-//   --gain        <n>        RTL-SDR gain, dB or "auto" (default: auto)
-//   --ppm         <n>        RTL-SDR PPM correction   (default: 0)
-//   --device      <n>        RTL-SDR device index     (default: 0)
-//   --kiss-host   <h>        Direwolf KISS host       (default: 127.0.0.1)
-//   --kiss-port   <n>        Direwolf KISS TCP port   (default: 8001)
-// ADS-B options (active in mode: adsb, both):
-//   --adsb-bin    <path>     dump1090 binary           (default: dump1090)
-//   --adsb-device <n>        RTL-SDR device for ADS-B  (default: 1 in both, 0 otherwise)
-//   --sbs-port    <n>        dump1090 SBS output port  (default: 30003)
-// All options can also be set via environment variables:
-//   MODE, PORT, FREQ, SAMPLE_RATE, GAIN, PPM, DEVICE, KISS_HOST, KISS_PORT
-//   ADSB_BIN, ADSB_DEVICE, SBS_PORT
-// Pat/Winlink: run pat separately — `~/go/bin/pat http`
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -39,6 +20,43 @@ function parseArgs() {
 }
 
 const argv = parseArgs();
+
+if (argv.help || argv.h) {
+  process.stdout.write(`
+Usage: node server.js [options]
+
+Options:
+  --mode <m>           Operating mode: aprs | adsb         (default: aprs)
+  --port <n>           Web server HTTP port                 (default: 3000)
+  --help, -h           Print this help and exit
+
+APRS options (--mode aprs):
+  --freq <f>           RTL-FM receive frequency             (default: 144.390M)
+  --sample-rate <n>    Audio sample rate in Hz              (default: 22050)
+  --gain <n|auto>      RTL-SDR gain in dB, or "auto"        (default: auto)
+  --ppm <n>            RTL-SDR PPM frequency correction     (default: 0)
+  --device <n>         RTL-SDR device index                 (default: 0)
+  --kiss-host <h>      Direwolf KISS TCP host               (default: 127.0.0.1)
+  --kiss-port <n>      Direwolf KISS TCP port               (default: 8001)
+
+ADS-B options (--mode adsb):
+  --adsb-bin <path>    Path to dump1090 binary              (default: dump1090)
+  --adsb-device <n>    RTL-SDR device index for ADS-B       (default: 0)
+  --sbs-port <n>       dump1090 SBS TCP output port         (default: 30003)
+
+All options can also be set via environment variables:
+  MODE  PORT  FREQ  SAMPLE_RATE  GAIN  PPM  DEVICE
+  KISS_HOST  KISS_PORT  ADSB_BIN  ADSB_DEVICE  SBS_PORT
+
+Examples:
+  node server.js                            # APRS on 144.390 MHz
+  node server.js --freq 144.800M            # Europe APRS frequency
+  node server.js --port 8080 --gain 40      # custom port + manual gain
+  node server.js --mode adsb                # ADS-B only
+`);
+  process.exit(0);
+}
+
 const get = (flag, envKey, def) =>
   argv[flag] !== undefined ? argv[flag]
   : process.env[envKey]    !== undefined ? process.env[envKey]
@@ -46,7 +64,7 @@ const get = (flag, envKey, def) =>
 
 const os = require('os');
 
-const MODE        =        get('mode',        'MODE',        'aprs');  // aprs | adsb | both
+const MODE        =        get('mode',        'MODE',        'aprs');  // aprs | adsb
 const WEB_PORT    = Number(get('port',        'PORT',        3000));
 const FREQ        =        get('freq',        'FREQ',        '144.390M');
 const SAMPLE_RATE = Number(get('sample-rate', 'SAMPLE_RATE', 22050));
@@ -56,7 +74,7 @@ const RTL_DEVICE  = Number(get('device',      'DEVICE',      0));
 const DIREWOLF_HOST =      get('kiss-host',   'KISS_HOST',   '127.0.0.1');
 const KISS_PORT   = Number(get('kiss-port',   'KISS_PORT',   8001));
 const ADSB_BIN    =        get('adsb-bin',    'ADSB_BIN',    'dump1090');
-const ADSB_DEVICE = Number(get('adsb-device', 'ADSB_DEVICE', MODE === 'both' ? 1 : 0));
+const ADSB_DEVICE = Number(get('adsb-device', 'ADSB_DEVICE', 0));
 const SBS_PORT    = Number(get('sbs-port',    'SBS_PORT',    30003));
 
 // KISS special bytes
@@ -142,6 +160,28 @@ function toDecDeg(deg, min, dir) {
   let v = deg + min / 60;
   if (dir === 'S' || dir === 'W') v = -v;
   return Math.round(v * 1000000) / 1000000;
+}
+
+function parseWeather(str) {
+  // strip optional 8-char timestamp (MMDDHHmm)
+  const data = str.replace(/^\d{8}/, '');
+  const wx = {};
+  let m;
+
+  if ((m = data.match(/c(\d{3})/)) && m[1] !== '...') wx.windDir   = parseInt(m[1]);
+  if ((m = data.match(/s(\d{3})/)) && m[1] !== '...') wx.windSpeed = parseInt(m[1]);   // mph
+  if ((m = data.match(/g(\d{3})/)) && m[1] !== '...') wx.windGust  = parseInt(m[1]);   // mph
+  if ((m = data.match(/t(-?\d{1,3})/)))                wx.tempF     = parseInt(m[1]);
+  if ((m = data.match(/r(\d{3})/)))  wx.rainHour     = parseInt(m[1]) / 100;  // inches
+  if ((m = data.match(/p(\d{3})/)))  wx.rain24h      = parseInt(m[1]) / 100;
+  if ((m = data.match(/P(\d{3})/)))  wx.rainMidnight = parseInt(m[1]) / 100;
+  if ((m = data.match(/h(\d{2})/)))  wx.humidity     = parseInt(m[1]) === 0 ? 100 : parseInt(m[1]);  // %
+  if ((m = data.match(/b(\d{5})/)))  wx.pressure     = parseInt(m[1]) / 10;  // mbar
+
+  // derived
+  if (wx.tempF != null) wx.tempC = Math.round((wx.tempF - 32) * 5 / 9 * 10) / 10;
+
+  return Object.keys(wx).length ? wx : null;
 }
 
 function parseStdPos(s) {
@@ -304,7 +344,7 @@ function parseAPRS(frame) {
 
     case '_':
       pkt.type = 'weather';
-      pkt.comment = infoStr.slice(1);
+      pkt.wx = parseWeather(infoStr.slice(1));
       break;
 
     case 'T':
@@ -395,6 +435,7 @@ function handlePacket(pkt) {
   if (pkt.winlink) st.winlink = true;
   if (pkt.speed    != null) { st.speed = pkt.speed; st.course = pkt.course; }
   if (pkt.altitude != null) st.altitude = pkt.altitude;
+  if (pkt.wx != null)       st.wx = pkt.wx;
 
   packetLog.push(pkt);
   if (packetLog.length > MAX_LOG) packetLog.shift();
@@ -631,5 +672,5 @@ server.listen(WEB_PORT, '0.0.0.0', () => {
     console.log(`ADS-B:  bin=${ADSB_BIN}  device=${ADSB_DEVICE}  sbs-port=${SBS_PORT}`);
 });
 
-if (MODE === 'aprs' || MODE === 'both') { startRadio(); startKISSClient(); }
-if (MODE === 'adsb' || MODE === 'both') startADSB();
+if (MODE === 'aprs') { startRadio(); startKISSClient(); }
+if (MODE === 'adsb') startADSB();
