@@ -23,9 +23,10 @@ const { spawn } = require('child_process');
 //   --adsb-bin    <path>     dump1090 binary           (default: dump1090)
 //   --adsb-device <n>        RTL-SDR device for ADS-B  (default: 1 in both, 0 otherwise)
 //   --sbs-port    <n>        dump1090 SBS output port  (default: 30003)
-// All options can also be set via environment variables (upper-snake-case):
+// All options can also be set via environment variables:
 //   MODE, PORT, FREQ, SAMPLE_RATE, GAIN, PPM, DEVICE, KISS_HOST, KISS_PORT
 //   ADSB_BIN, ADSB_DEVICE, SBS_PORT
+// Pat/Winlink: run pat separately — `~/go/bin/pat http`
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -54,9 +55,6 @@ const PPM         = Number(get('ppm',         'PPM',         0));
 const RTL_DEVICE  = Number(get('device',      'DEVICE',      0));
 const DIREWOLF_HOST =      get('kiss-host',   'KISS_HOST',   '127.0.0.1');
 const KISS_PORT   = Number(get('kiss-port',   'KISS_PORT',   8001));
-const PAT_BIN     =        get('pat-bin',     'PAT_BIN',     path.join(os.homedir(), 'go/bin/pat'));
-const PAT_PORT    = Number(get('pat-port',    'PAT_PORT',    8080));
-const PAT_CALL    =        get('pat-callsign','PAT_CALLSIGN','');
 const ADSB_BIN    =        get('adsb-bin',    'ADSB_BIN',    'dump1090');
 const ADSB_DEVICE = Number(get('adsb-device', 'ADSB_DEVICE', MODE === 'both' ? 1 : 0));
 const SBS_PORT    = Number(get('sbs-port',    'SBS_PORT',    30003));
@@ -77,9 +75,6 @@ const stations = new Map();   // callsign -> station object
 const packetLog = [];          // last 200 packets
 const MAX_LOG = 200;
 const wsClients = new Set();
-const winlinkMsgs = [];        // last 100 Winlink messages from Pat
-const MAX_WL = 100;
-const seenMIDs = new Set();    // dedup Pat inbox polls
 const aircraft = new Map();    // icao -> aircraft object
 const MAX_AC_TRACK = 100;
 
@@ -91,7 +86,6 @@ wss.on('connection', (ws) => {
     type: 'init',
     stations: Array.from(stations.values()),
     log: packetLog.slice(-50),
-    winlink: winlinkMsgs.slice(-50),
     aircraft: Array.from(aircraft.values())
   }));
   ws.on('close', () => wsClients.delete(ws));
@@ -507,49 +501,6 @@ function startRadio() {
   direwolf.on('error', (e) => die('direwolf',  e.message));
 }
 
-// ─── Pat / Winlink ─────────────────────────────────────────────────────────────
-
-async function pollPat() {
-  try {
-    const res = await fetch(`http://127.0.0.1:${PAT_PORT}/api/mailbox/inbox`);
-    if (!res.ok) return;
-    const messages = await res.json();
-    if (!Array.isArray(messages)) return;
-    for (const msg of messages) {
-      if (seenMIDs.has(msg.MID)) continue;
-      seenMIDs.add(msg.MID);
-      winlinkMsgs.push(msg);
-      if (winlinkMsgs.length > MAX_WL) winlinkMsgs.shift();
-      broadcast({ type: 'winlink', message: msg });
-      console.log(`[Pat] New message: "${msg.Subject}" from ${msg.From}`);
-    }
-  } catch (_) { /* Pat not running yet */ }
-}
-
-function startPat() {
-  const args = [];
-  if (PAT_CALL) args.push('--mycall', PAT_CALL);
-  args.push('http', '-a', `0.0.0.0:${PAT_PORT}`);
-
-  console.log(`[Pat] Starting ${PAT_BIN} ${args.join(' ')}`);
-  const pat = spawn(PAT_BIN, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-
-  pat.stdout.on('data', d => process.stdout.write(`[Pat] ${d}`));
-  pat.stderr.on('data', d => process.stderr.write(`[Pat] ${d}`));
-
-  pat.on('error', (e) => console.error(`[Pat] Failed to start: ${e.message}`));
-  pat.on('close', (c) => {
-    console.log(`[Pat] exited (${c}) — restarting in 10s`);
-    setTimeout(startPat, 10000);
-  });
-
-  // Begin polling after Pat has time to initialize
-  setTimeout(() => {
-    pollPat();
-    setInterval(pollPat, 30000);
-  }, 5000);
-}
-
 // ─── ADS-B / SBS ───────────────────────────────────────────────────────────────
 
 function parseSBS(line) {
@@ -602,6 +553,7 @@ function handleAircraft(upd) {
     if (ac.track.length > MAX_AC_TRACK) ac.track.shift();
   }
   broadcast({ type: 'aircraft', aircraft: ac });
+  console.log(`[ADS-B] ${ac.icao}${ac.callsign ? ' ' + ac.callsign : ''}${ac.altitude != null ? ` alt=${ac.altitude}ft` : ''}${ac.lat != null ? ` @ ${ac.lat},${ac.lon}` : ''}`);
 }
 
 // Remove aircraft not heard in 60 s
@@ -619,7 +571,10 @@ function connectSBS() {
   const sock = new net.Socket();
   let buf = '';
 
-  sock.on('connect', () => console.log(`[SBS] Connected to dump1090 on :${SBS_PORT}`));
+  sock.on('connect', () => {
+    console.log(`[SBS] Connected to dump1090 on :${SBS_PORT}`);
+    broadcast({ type: 'status', connected: true });
+  });
 
   sock.on('data', (data) => {
     buf += data.toString();
@@ -636,6 +591,7 @@ function connectSBS() {
   sock.on('error', (err) => console.error('[SBS] Error:', err.message));
   sock.on('close', () => {
     console.log('[SBS] Disconnected — retrying in 5s');
+    broadcast({ type: 'status', connected: false });
     setTimeout(() => sock.connect(SBS_PORT, '127.0.0.1'), 5000);
   });
 
@@ -673,8 +629,7 @@ server.listen(WEB_PORT, '0.0.0.0', () => {
     console.log(`APRS:   freq=${FREQ}  gain=${GAIN}  ppm=${PPM}  device=${RTL_DEVICE}  sample-rate=${SAMPLE_RATE}  kiss=${DIREWOLF_HOST}:${KISS_PORT}`);
   if (MODE !== 'aprs')
     console.log(`ADS-B:  bin=${ADSB_BIN}  device=${ADSB_DEVICE}  sbs-port=${SBS_PORT}`);
-  console.log(`Pat:    bin=${PAT_BIN}  port=${PAT_PORT}${PAT_CALL ? `  callsign=${PAT_CALL}` : '  (set --pat-callsign)'}`);
 });
 
-if (MODE === 'aprs' || MODE === 'both') { startRadio(); startKISSClient(); startPat(); }
+if (MODE === 'aprs' || MODE === 'both') { startRadio(); startKISSClient(); }
 if (MODE === 'adsb' || MODE === 'both') startADSB();
