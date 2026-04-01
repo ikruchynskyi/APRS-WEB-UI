@@ -7,9 +7,43 @@ const http = require('http');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const WEB_PORT = 3000;
-const DIREWOLF_HOST = '127.0.0.1';
-const KISS_PORT = 8001;
+// ─── CLI / ENV Config ──────────────────────────────────────────────────────────
+// Usage: node server.js [options]
+//   --port        <n>        Web server port          (default: 3000)
+//   --freq        <f>        RTL-FM frequency         (default: 144.390M)
+//   --sample-rate <n>        Audio sample rate Hz     (default: 22050)
+//   --gain        <n>        RTL-SDR gain, dB or "auto" (default: auto)
+//   --ppm         <n>        RTL-SDR PPM correction   (default: 0)
+//   --device      <n>        RTL-SDR device index     (default: 0)
+//   --kiss-host   <h>        Direwolf KISS host       (default: 127.0.0.1)
+//   --kiss-port   <n>        Direwolf KISS TCP port   (default: 8001)
+// All options can also be set via environment variables (upper-snake-case):
+//   PORT, FREQ, SAMPLE_RATE, GAIN, PPM, DEVICE, KISS_HOST, KISS_PORT
+
+function parseArgs() {
+  const args = process.argv.slice(2);
+  const cfg = {};
+  for (let i = 0; i < args.length; i++) {
+    const m = args[i].match(/^--?([\w-]+)(?:=(.+))?$/);
+    if (m) cfg[m[1]] = m[2] !== undefined ? m[2] : (args[i + 1] && !args[i + 1].startsWith('-') ? args[++i] : true);
+  }
+  return cfg;
+}
+
+const argv = parseArgs();
+const get = (flag, envKey, def) =>
+  argv[flag] !== undefined ? argv[flag]
+  : process.env[envKey]    !== undefined ? process.env[envKey]
+  : def;
+
+const WEB_PORT    = Number(get('port',        'PORT',        3000));
+const FREQ        =        get('freq',        'FREQ',        '144.390M');
+const SAMPLE_RATE = Number(get('sample-rate', 'SAMPLE_RATE', 22050));
+const GAIN        =        get('gain',        'GAIN',        'auto');
+const PPM         = Number(get('ppm',         'PPM',         0));
+const RTL_DEVICE  = Number(get('device',      'DEVICE',      0));
+const DIREWOLF_HOST =      get('kiss-host',   'KISS_HOST',   '127.0.0.1');
+const KISS_PORT   = Number(get('kiss-port',   'KISS_PORT',   8001));
 
 // KISS special bytes
 const FEND = 0xC0;
@@ -383,13 +417,18 @@ function startKISSClient() {
 // ─── Radio Pipeline ────────────────────────────────────────────────────────────
 
 function startRadio() {
-  console.log('[radio] Starting rtl_fm → direwolf pipeline');
+  console.log(`[radio] Starting rtl_fm → direwolf pipeline (freq=${FREQ}, gain=${GAIN}, ppm=${PPM}, device=${RTL_DEVICE})`);
 
-  const rtlFm = spawn('rtl_fm', ['-f', '144.390M', '-M', 'fm', '-s', '22050', '-E', 'deemp', '-'], {
+  const rtlArgs = ['-f', FREQ, '-M', 'fm', '-s', String(SAMPLE_RATE), '-E', 'deemp', '-d', String(RTL_DEVICE)];
+  if (PPM !== 0) rtlArgs.push('-p', String(PPM));
+  if (GAIN !== 'auto') rtlArgs.push('-g', String(GAIN));
+  rtlArgs.push('-');
+
+  const rtlFm = spawn('rtl_fm', rtlArgs, {
     stdio: ['ignore', 'pipe', 'pipe']
   });
 
-  const direwolf = spawn('direwolf', ['-r', '22050', '-'], {
+  const direwolf = spawn('direwolf', ['-r', String(SAMPLE_RATE), '-'], {
     stdio: ['pipe', 'pipe', 'pipe']
   });
 
@@ -420,7 +459,11 @@ function startRadio() {
 // ─── Start ─────────────────────────────────────────────────────────────────────
 
 server.listen(WEB_PORT, '0.0.0.0', () => {
-  console.log(`APRS Web Monitor → http://192.168.0.101:${WEB_PORT}`);
+  const ifaces = require('os').networkInterfaces();
+  const ips = Object.values(ifaces).flat().filter(i => i.family === 'IPv4' && !i.internal).map(i => i.address);
+  console.log(`APRS Web Monitor → http://localhost:${WEB_PORT}`);
+  ips.forEach(ip => console.log(`                   http://${ip}:${WEB_PORT}`));
+  console.log(`Config: freq=${FREQ}  gain=${GAIN}  ppm=${PPM}  device=${RTL_DEVICE}  sample-rate=${SAMPLE_RATE}  kiss=${DIREWOLF_HOST}:${KISS_PORT}`);
 });
 startRadio();
 startKISSClient();
