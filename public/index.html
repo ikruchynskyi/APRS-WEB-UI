@@ -358,7 +358,7 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 L.control.attribution({ position: 'bottomleft', prefix: false })
   .addAttribution('© <a href="https://osm.org">OpenStreetMap</a>')
   .addTo(map);
-map.setView([39, -95], 5); // US default
+map.setView([40.73, -73.95], 9); // NYC, where the receiver is
 
 // ── Symbol → Style ───────────────────────────────────────────────────────────
 const SYM_MAP = {
@@ -716,7 +716,7 @@ let ws, reconnectTimer;
 
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${proto}//${location.host}`);
+  ws = new WebSocket(`${proto}//${location.host}${location.pathname}`); // works at / and behind a path prefix
 
   ws.onopen = () => {
     setConn(true);
